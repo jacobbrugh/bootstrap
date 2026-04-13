@@ -4,23 +4,53 @@ All calls go through `op` with `--format=json` where available, so we get
 structured output instead of parsing ad-hoc text. The phase that uses this
 assumes `op` has been signed in to at least one account — the `ephemeral_secrets`
 phase polls `signin_wait` to block until that's true.
+
+On macOS the 1Password desktop app verifies CLI authenticity via XPC code
+signature checks (Developer ID `2BUA8C4S2C`, AgileBits Inc.). The Nix-
+packaged `_1password-cli` is not AgileBits-signed and is rejected by the
+desktop app's XPC server, so every `op` call returns "account is not
+signed in" — even with "Integrate with 1Password CLI" enabled. Use the
+Homebrew-installed binary instead, which ships the official signed `op`.
+See https://developer.1password.com/docs/cli/app-integration-security/.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 
 from bootstrap.lib import sh
 from bootstrap.lib.errors import PrereqMissing
+from bootstrap.platform import Platform, detect
 
 _log = logging.getLogger(__name__)
+
+# Canonical locations the Homebrew `1password-cli` cask drops the
+# AgileBits-signed binary on macOS. Apple Silicon writes to /opt/homebrew,
+# Intel to /usr/local; the .pkg-based cask may also place it under
+# /usr/local on Apple Silicon, so check both.
+_DARWIN_OP_PATHS = ("/opt/homebrew/bin/op", "/usr/local/bin/op")
+
+
+def _op_binary() -> str:
+    """Return the best `op` binary path for the current platform.
+
+    On Darwin, prefer the Homebrew-installed signed binary so the desktop
+    app accepts XPC connections from it. On other platforms, fall back to
+    PATH (Nix's wrapper-injected `op` for the bootstrap process).
+    """
+    if detect() is Platform.DARWIN:
+        for candidate in _DARWIN_OP_PATHS:
+            if os.path.exists(candidate):
+                return candidate
+    return "op"
 
 
 def _whoami_result() -> sh.Result:
     return sh.run(
-        ["op", "whoami", "--format=json"],
+        [_op_binary(), "whoami", "--format=json"],
         check=False,
         destructive=False,
     )
@@ -47,7 +77,7 @@ def read(path: str) -> str:
     Returns the raw value with the trailing newline stripped (op always
     appends one). Raises `ShellError` on failure.
     """
-    result = sh.run(["op", "read", path], destructive=False)
+    result = sh.run([_op_binary(), "read", path], destructive=False)
     return result.stdout.rstrip("\n")
 
 

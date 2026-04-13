@@ -1,9 +1,13 @@
-"""Darwin onepassword — install GUI, launch, block until sign-in completes.
+"""Darwin onepassword — install GUI + AgileBits-signed CLI, launch, block until signed in.
 
-The 1Password CLI (`op`) is available during the bootstrap run via the
-Nix-provided PATH from `makeWrapperArgs` in the flake, so we don't need
-to install it here — only the GUI app, which is the gate for the user to
-sign in and enable CLI integration in the app's Developer settings.
+We MUST install `1password-cli` via Homebrew here (in addition to the
+GUI cask), even though the Nix-provided PATH already exposes an `op`
+binary. The macOS desktop app verifies CLI authenticity by XPC code
+signature check; the Nix-packaged `_1password-cli` is not AgileBits-
+signed and is rejected with "account is not signed in" on every call.
+The Homebrew cask ships the official signed binary that the desktop
+app trusts. See `bootstrap.lib.op` for the full explanation and the
+`_op_binary()` helper that selects the right one.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ _log = log.get(__name__)
 
 def run(ctx: Context) -> None:
     brew.install_cask("1password", dry_run=ctx.dry_run)
+    brew.install_cask("1password-cli", dry_run=ctx.dry_run)
 
     if ctx.dry_run:
         _log.info("would launch 1Password GUI and poll `op whoami` until signed in")
