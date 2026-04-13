@@ -14,11 +14,15 @@ NIX_INSTALLER="https://nixos.org/nix/install"
 
 _log() { printf '\033[0;32m[INFO]\033[0m %s\n' "$*"; }
 
-if ! command -v nix &>/dev/null; then
-  _log "Nix not found — installing..."
-  curl --proto '=https' --tlsv1.2 -sSfL "$NIX_INSTALLER" | sh -s -- --daemon
-
-  # Source nix into this shell
+# Source the Nix profile script directly, whether or not the surrounding
+# shell has the /etc/zshrc hook. This covers two re-run cases:
+#   1. Nix was installed by a previous run but this new shell hasn't
+#      re-read /etc/zshrc yet
+#   2. `prereqs` moved /etc/zshrc aside and the nix-daemon hook is gone
+# Without this, `command -v nix` below would return false and re-trigger
+# the installer, which then fails trying to re-create an existing APFS
+# volume.
+_source_nix_profile() {
   if [[ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
     # shellcheck disable=SC1091
     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -26,6 +30,14 @@ if ! command -v nix &>/dev/null; then
     # shellcheck disable=SC1091
     . "$HOME/.nix-profile/etc/profile.d/nix.sh"
   fi
+}
+
+_source_nix_profile
+
+if ! command -v nix &>/dev/null; then
+  _log "Nix not found — installing..."
+  curl --proto '=https' --tlsv1.2 -sSfL "$NIX_INSTALLER" | sh -s -- --daemon
+  _source_nix_profile
 fi
 
 _log "Running bootstrap flake: $BOOTSTRAP_FLAKE"

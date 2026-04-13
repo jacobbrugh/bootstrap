@@ -17,14 +17,41 @@ _log = logging.getLogger(__name__)
 _INSTALL_URL = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
 
 
+_CANONICAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+
+
+def _find_brew_bin_dir() -> str | None:
+    for candidate in _CANONICAL_BIN_DIRS:
+        if os.path.exists(os.path.join(candidate, "brew")):
+            return candidate
+    return None
+
+
+def ensure_on_path() -> None:
+    """Prepend Homebrew's bin dir to `os.environ['PATH']` if missing.
+
+    Homebrew's installer does not modify the current shell's PATH,
+    `~/.zprofile`, or the parent Python process's environment. Without
+    this injection, subsequent `sh.run(["brew", ...])` calls hit
+    `FileNotFoundError` even though brew is installed on disk. Idempotent;
+    safe to call repeatedly.
+    """
+    brew_bin_dir = _find_brew_bin_dir()
+    if brew_bin_dir is None:
+        return
+    existing = os.environ.get("PATH", "")
+    if brew_bin_dir in existing.split(os.pathsep):
+        return
+    os.environ["PATH"] = (
+        f"{brew_bin_dir}{os.pathsep}{existing}" if existing else brew_bin_dir
+    )
+
+
 def installed() -> bool:
     """Return True if `brew` is on PATH or present at the canonical locations."""
     if shutil.which("brew") is not None:
         return True
-    for candidate in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew"):
-        if os.path.exists(candidate):
-            return True
-    return False
+    return _find_brew_bin_dir() is not None
 
 
 def install_script(*, dry_run: bool = False) -> None:
@@ -42,6 +69,7 @@ def install_script(*, dry_run: bool = False) -> None:
     """
     if installed():
         _log.info("Homebrew already installed")
+        ensure_on_path()
         return
     _log.info("fetching Homebrew installer script")
     installer = sh.run(
@@ -64,10 +92,12 @@ def install_script(*, dry_run: bool = False) -> None:
         dry_run=dry_run,
         destructive=True,
     )
+    ensure_on_path()
 
 
 def install_cask(name: str, *, dry_run: bool = False) -> None:
     """Install a cask if not already present."""
+    ensure_on_path()
     check = sh.run(["brew", "list", "--cask", name], check=False, destructive=False)
     if check.ok():
         _log.debug("cask %s already installed", name)
@@ -78,6 +108,7 @@ def install_cask(name: str, *, dry_run: bool = False) -> None:
 
 def install_formula(name: str, *, dry_run: bool = False) -> None:
     """Install a formula if not already present."""
+    ensure_on_path()
     check = sh.run(["brew", "list", "--formula", name], check=False, destructive=False)
     if check.ok():
         _log.debug("formula %s already installed", name)
