@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  flake-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            allow-unfree = true
+
+      - name: Build the bootstrap package
+        run: nix build .#default
+
+      - name: Sanity-check the CLI
+        run: ./result/bin/bootstrap --help
+
+      - name: Flake check (mypy --strict + pytest + ruff + nixfmt)
+        run: nix flake check

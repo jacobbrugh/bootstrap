@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bootstrap"
+version = "0.1.0"
+description = "Typed bootstrap CLI for jacobbrugh/dotfiles — splits fresh-machine setup into independent idempotent phases"
+requires-python = ">=3.12"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Jacob Brugh" }]
+dependencies = [
+  "typer>=0.12",
+  "rich>=13",
+  "questionary>=2.0",
+  "tomlkit>=0.13",
+  "ruamel.yaml>=0.18",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.11",
+  "ruff>=0.6",
+  "pytest>=8",
+]
+
+[project.scripts]
+bootstrap              = "bootstrap.cli:main"
+bootstrap-prereqs      = "bootstrap.cli:phase_prereqs"
+bootstrap-onepassword  = "bootstrap.cli:phase_onepassword"
+bootstrap-ssh          = "bootstrap.cli:phase_ssh"
+bootstrap-register     = "bootstrap.cli:phase_register"
+bootstrap-switch       = "bootstrap.cli:phase_switch"
+bootstrap-post         = "bootstrap.cli:phase_post"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bootstrap"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/bootstrap/data/github_known_hosts.txt" = "bootstrap/data/github_known_hosts.txt"
+"src/bootstrap/data/bootstrap-secrets.sops.yaml" = "bootstrap/data/bootstrap-secrets.sops.yaml"
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src/bootstrap", "tests"]
+warn_unreachable = true
+enable_error_code = ["redundant-expr", "truthy-bool", "possibly-undefined"]
+
+[[tool.mypy.overrides]]
+module = ["questionary.*", "ruamel.*", "tomlkit.*"]
+ignore_missing_imports = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "ANN", "TID"]
+ignore = [
+  "ANN401",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "SIM"]
