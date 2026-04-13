@@ -77,6 +77,7 @@ if ($SkipNixWin) {
     Write-Info "[DRY RUN] Would run inside WSL: nix-win switch --flake $BootstrapFlake#bootstrap"
 } else {
     wsl -d $WslInstanceName -- nix run `
+        --refresh `
         --extra-experimental-features "nix-command flakes" `
         github:jacobbrugh/nix-win `
         -- switch --flake "$BootstrapFlake#bootstrap"
@@ -94,7 +95,7 @@ Write-Step 3 3 "Run Unix bootstrap inside WSL"
 if ($DryRun) {
     Write-Info "[DRY RUN] Would run inside WSL: nix run $BootstrapFlake"
 } else {
-    wsl -d $WslInstanceName -- sh -c "nix run --extra-experimental-features 'nix-command flakes' $BootstrapFlake"
+    wsl -d $WslInstanceName -- sh -c "nix run --refresh --extra-experimental-features 'nix-command flakes' $BootstrapFlake"
 }
 
 Write-Host ""

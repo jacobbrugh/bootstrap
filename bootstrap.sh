@@ -29,6 +29,11 @@ if ! command -v nix &>/dev/null; then
 fi
 
 _log "Running bootstrap flake: $BOOTSTRAP_FLAKE"
+# --refresh forces Nix to fetch the latest commit on main instead of
+# returning a cached eval (default TTL: 1 hour). Without it, fixes
+# pushed in the last hour wouldn't reach a user re-running this wrapper
+# — which is exactly the recovery path after a mid-bootstrap failure.
 exec nix run \
+  --refresh \
   --extra-experimental-features "nix-command flakes" \
   "$BOOTSTRAP_FLAKE" -- "$@"
