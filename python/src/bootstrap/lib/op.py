@@ -18,13 +18,15 @@ from bootstrap.lib.errors import PrereqMissing
 _log = logging.getLogger(__name__)
 
 
-def whoami() -> bool:
-    """Return True if `op` is signed in to at least one account."""
-    result = sh.run(
+def _whoami_result() -> sh.Result:
+    return sh.run(
         ["op", "whoami", "--format=json"],
         check=False,
         destructive=False,
     )
+
+
+def _parse_whoami(result: sh.Result) -> bool:
     if not result.ok():
         return False
     try:
@@ -32,6 +34,11 @@ def whoami() -> bool:
     except json.JSONDecodeError:
         return False
     return isinstance(parsed, dict) and "user_uuid" in parsed
+
+
+def whoami() -> bool:
+    """Return True if `op` is signed in to at least one account."""
+    return _parse_whoami(_whoami_result())
 
 
 def read(path: str) -> str:
@@ -47,22 +54,31 @@ def read(path: str) -> str:
 def signin_wait(timeout_s: float = 180.0, poll_interval_s: float = 2.0) -> None:
     """Poll `op whoami` until it succeeds, or raise after `timeout_s`.
 
-    Emits a progress line every ~10 seconds while waiting so the user can see
-    the bootstrap is still alive while they're typing their master password.
+    Emits a progress line every ~10 seconds while waiting, including the
+    most recent stderr from `op whoami` so the user can see *what* is
+    failing (approval pending, GUI locked, no account, etc.) instead of
+    an opaque timeout.
     """
     start = time.monotonic()
     deadline = start + timeout_s
     attempts = 0
+    last_stderr = ""
     while time.monotonic() < deadline:
-        if whoami():
+        result = _whoami_result()
+        if _parse_whoami(result):
             _log.info("1Password CLI signed in")
             return
+        stripped = result.stderr.strip()
+        if stripped:
+            last_stderr = stripped
         attempts += 1
         if attempts % 5 == 0:
             elapsed = int(time.monotonic() - start)
             _log.info("still waiting for 1Password sign-in (%ds elapsed)", elapsed)
+            if last_stderr:
+                _log.info("  op said: %s", last_stderr)
         time.sleep(poll_interval_s)
     raise PrereqMissing(
         "1Password CLI sign-in",
-        where=f"timed out after {timeout_s:.0f}s",
+        where=f"timed out after {timeout_s:.0f}s; last op error: {last_stderr or 'none'}",
     )
