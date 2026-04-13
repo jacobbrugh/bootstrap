@@ -122,21 +122,47 @@ def sudo_run(
     dry_run: bool = False,
     destructive: bool = True,
 ) -> Result:
-    """Run a command under sudo, non-interactively.
+    """Run a command under sudo, using the primed credential cache.
 
-    Prefixes with `sudo -n`, so a password prompt never appears mid-phase.
-    Relies on `prime_sudo()` having been called earlier in the phase to
-    populate the credential cache.
+    Tries `sudo -n` (non-interactive) first. If the credential cache has
+    been invalidated — notably, Homebrew's installer sets an EXIT trap
+    that runs `sudo -k`, wiping any cache populated by `prime_sudo()`
+    before the installer ran — re-prime once (prompting the user) and
+    retry. Any other sudo failure propagates unchanged.
     """
-    return run(
-        ["sudo", "-n", *cmd],
-        check=check,
-        capture=capture,
-        cwd=cwd,
-        env=env,
-        dry_run=dry_run,
-        destructive=destructive,
-    )
+    sudo_cmd: tuple[str, ...] = ("sudo", "-n", *cmd)
+
+    def _invoke() -> Result:
+        return run(
+            sudo_cmd,
+            check=False,
+            capture=capture,
+            cwd=cwd,
+            env=env,
+            dry_run=dry_run,
+            destructive=destructive,
+        )
+
+    result = _invoke()
+    if result.dry_run_skipped or result.ok():
+        return result
+    if _sudo_cache_miss(result.stderr):
+        _log.info("sudo credential cache was cleared; re-priming (you may be prompted)")
+        prime_sudo(dry_run=dry_run)
+        result = _invoke()
+    if check and not result.ok():
+        raise ShellError(list(result.cmd), result.returncode, result.stderr)
+    return result
+
+
+def _sudo_cache_miss(stderr: str) -> bool:
+    """True if `sudo -n` stderr indicates an empty/stale credential cache.
+
+    `sudo -n` prints `sudo: a password is required` when the cache is
+    missing and asks to prompt. Anything else — permission denied, command
+    not found, etc. — is not something re-priming can recover from.
+    """
+    return "password is required" in stderr
 
 
 def prime_sudo(*, dry_run: bool = False) -> None:
