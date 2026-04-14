@@ -17,8 +17,16 @@ NAME = "keychain"
 
 _log = log.get(__name__)
 
+# `UseKeychain` is an Apple-specific patch on macOS's OpenSSH. Any other
+# ssh on the machine (notably the Nix-provided one the bootstrap wrapper
+# puts first on PATH) will abort at config-parse time with
+# "Bad configuration option: usekeychain". `IgnoreUnknown UseKeychain`
+# is an upstream directive that tells any parser to silently skip the
+# option if it doesn't recognize it. Apple's ssh sees and uses
+# `UseKeychain yes` normally; everyone else skips it.
 _STANZA = (
     "Host *\n"
+    "    IgnoreUnknown UseKeychain\n"
     "    UseKeychain yes\n"
     "    AddKeysToAgent yes\n"
     f"    IdentityFile {SSH_KEY}\n"
