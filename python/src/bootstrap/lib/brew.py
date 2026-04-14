@@ -16,7 +16,6 @@ _log = logging.getLogger(__name__)
 
 _INSTALL_URL = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
 
-
 _CANONICAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 
@@ -42,9 +41,7 @@ def ensure_on_path() -> None:
     existing = os.environ.get("PATH", "")
     if brew_bin_dir in existing.split(os.pathsep):
         return
-    os.environ["PATH"] = (
-        f"{brew_bin_dir}{os.pathsep}{existing}" if existing else brew_bin_dir
-    )
+    os.environ["PATH"] = f"{brew_bin_dir}{os.pathsep}{existing}" if existing else brew_bin_dir
 
 
 def installed() -> bool:
@@ -54,7 +51,7 @@ def installed() -> bool:
     return _find_brew_bin_dir() is not None
 
 
-def install_script(*, dry_run: bool = False) -> None:
+async def install_script(*, dry_run: bool = False) -> None:
     """Run the Homebrew installer non-interactively.
 
     Split into two explicit subprocess calls so the shell-boundary rule
@@ -72,7 +69,7 @@ def install_script(*, dry_run: bool = False) -> None:
         ensure_on_path()
         return
     _log.info("fetching Homebrew installer script")
-    installer = sh.run(
+    installer = await sh.run(
         ["curl", "-fsSL", _INSTALL_URL],
         dry_run=dry_run,
         destructive=True,
@@ -85,7 +82,7 @@ def install_script(*, dry_run: bool = False) -> None:
         return
     _log.info("running Homebrew installer (non-interactive)")
     env = {**os.environ, "NONINTERACTIVE": "1"}
-    sh.run(
+    await sh.run(
         ["bash"],
         env=env,
         input_text=installer.stdout,
@@ -95,23 +92,23 @@ def install_script(*, dry_run: bool = False) -> None:
     ensure_on_path()
 
 
-def install_cask(name: str, *, dry_run: bool = False) -> None:
+async def install_cask(name: str, *, dry_run: bool = False) -> None:
     """Install a cask if not already present."""
     ensure_on_path()
-    check = sh.run(["brew", "list", "--cask", name], check=False, destructive=False)
+    check = await sh.run(["brew", "list", "--cask", name], check=False, destructive=False)
     if check.ok():
         _log.debug("cask %s already installed", name)
         return
     _log.info("installing cask: %s", name)
-    sh.run(["brew", "install", "--cask", name], dry_run=dry_run, destructive=True)
+    await sh.run(["brew", "install", "--cask", name], dry_run=dry_run, destructive=True)
 
 
-def install_formula(name: str, *, dry_run: bool = False) -> None:
+async def install_formula(name: str, *, dry_run: bool = False) -> None:
     """Install a formula if not already present."""
     ensure_on_path()
-    check = sh.run(["brew", "list", "--formula", name], check=False, destructive=False)
+    check = await sh.run(["brew", "list", "--formula", name], check=False, destructive=False)
     if check.ok():
         _log.debug("formula %s already installed", name)
         return
     _log.info("installing formula: %s", name)
-    sh.run(["brew", "install", name], dry_run=dry_run, destructive=True)
+    await sh.run(["brew", "install", name], dry_run=dry_run, destructive=True)

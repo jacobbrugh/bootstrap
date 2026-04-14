@@ -1,13 +1,14 @@
 """Phase orchestration.
 
-Exposes a `run_<phase>(ctx)` function per phase that internally OS-dispatches
-to the right `phases/<os>/<phase>.py` module. The secrets-dependent phases
-(`ssh`, `register`) wrap themselves in `secrets.ephemeral_secrets` so
-standalone invocations (`nix run github:jacobbrugh/bootstrap#ssh`) work.
+Exposes an `async def run_<phase>(ctx)` function per phase that
+OS-dispatches to the right `phases/<os>/<phase>.py` module. The secrets-
+dependent phases (`ssh`, `register`) wrap themselves in an
+`async with secrets.ephemeral_secrets(ctx):` block so standalone
+invocations (`nix run github:jacobbrugh/bootstrap#ssh`) work.
 
-`run_full(ctx)` runs the whole platform-appropriate sequence and opens the
-secrets context exactly once, spanning the secrets-dependent subset of
-phases — so we don't re-prompt 1Password for every phase.
+`run_full(ctx)` runs the whole platform-appropriate sequence and opens
+the secrets context exactly once, spanning the secrets-dependent subset
+of phases — so we don't re-prompt 1Password for every phase.
 """
 
 from __future__ import annotations
@@ -35,36 +36,36 @@ from bootstrap.platform import Platform
 # ── individual standalone phase entry points ──────────────────────────
 
 
-def run_prereqs(ctx: Context) -> None:
+async def run_prereqs(ctx: Context) -> None:
     with log.phase("prereqs"):
-        _dispatch_prereqs(ctx)
+        await _dispatch_prereqs(ctx)
 
 
-def run_onepassword(ctx: Context) -> None:
+async def run_onepassword(ctx: Context) -> None:
     with log.phase("onepassword"):
-        _dispatch_onepassword(ctx)
+        await _dispatch_onepassword(ctx)
 
 
-def run_ssh(ctx: Context) -> None:
+async def run_ssh(ctx: Context) -> None:
     """Standalone `ssh` entry point — opens its own secrets context."""
-    with secrets.ephemeral_secrets(ctx):
-        _run_ssh_inner(ctx)
+    async with secrets.ephemeral_secrets(ctx):
+        await _run_ssh_inner(ctx)
 
 
-def run_register(ctx: Context) -> None:
+async def run_register(ctx: Context) -> None:
     """Standalone `register` entry point — opens its own secrets context."""
-    with secrets.ephemeral_secrets(ctx):
-        _run_register_inner(ctx)
+    async with secrets.ephemeral_secrets(ctx):
+        await _run_register_inner(ctx)
 
 
-def run_switch(ctx: Context) -> None:
+async def run_switch(ctx: Context) -> None:
     with log.phase("switch"):
-        _dispatch_switch(ctx)
+        await _dispatch_switch(ctx)
 
 
-def run_post(ctx: Context) -> None:
+async def run_post(ctx: Context) -> None:
     with log.phase("post"):
-        _dispatch_post(ctx)
+        await _dispatch_post(ctx)
 
 
 # Keychain (Darwin-only) has no standalone orchestrator helper — it's only
@@ -77,79 +78,79 @@ def run_post(ctx: Context) -> None:
 # ── full-sequence entry point ─────────────────────────────────────────
 
 
-def run_full(ctx: Context) -> None:
+async def run_full(ctx: Context) -> None:
     """Run the entire platform-appropriate phase list in one invocation."""
-    run_prereqs(ctx)
-    run_onepassword(ctx)
-    with secrets.ephemeral_secrets(ctx):
-        _run_ssh_inner(ctx)
-        _run_register_inner(ctx)
+    await run_prereqs(ctx)
+    await run_onepassword(ctx)
+    async with secrets.ephemeral_secrets(ctx):
+        await _run_ssh_inner(ctx)
+        await _run_register_inner(ctx)
         with log.phase("switch"):
-            _dispatch_switch(ctx)
-    run_post(ctx)
+            await _dispatch_switch(ctx)
+    await run_post(ctx)
 
 
 # ── OS dispatch helpers ────────────────────────────────────────────────
 
 
-def _run_ssh_inner(ctx: Context) -> None:
+async def _run_ssh_inner(ctx: Context) -> None:
     """ssh phase body assuming the secrets context is already open."""
     with log.phase("ssh"):
-        common_ssh.run(ctx)
+        await common_ssh.run(ctx)
     if ctx.platform is Platform.DARWIN:
         with log.phase("keychain"):
-            darwin_keychain.run(ctx)
+            await darwin_keychain.run(ctx)
 
 
-def _run_register_inner(ctx: Context) -> None:
+async def _run_register_inner(ctx: Context) -> None:
     """register phase body assuming the secrets context is already open."""
     with log.phase("register"):
-        common_register.run(ctx)
+        await common_register.run(ctx)
 
 
-def _dispatch_prereqs(ctx: Context) -> None:
+async def _dispatch_prereqs(ctx: Context) -> None:
     match ctx.platform:
         case Platform.DARWIN:
-            darwin_prereqs.run(ctx)
+            await darwin_prereqs.run(ctx)
         case Platform.NIXOS | Platform.NIXOS_WSL:
-            nixos_prereqs.run(ctx)
+            await nixos_prereqs.run(ctx)
         case Platform.LINUX_HM:
-            linux_prereqs.run(ctx)
+            await linux_prereqs.run(ctx)
         case _:
             raise BootstrapError(f"no prereqs phase for platform {ctx.platform.value}")
 
 
-def _dispatch_onepassword(ctx: Context) -> None:
+async def _dispatch_onepassword(ctx: Context) -> None:
     match ctx.platform:
         case Platform.DARWIN:
-            darwin_onepassword.run(ctx)
+            await darwin_onepassword.run(ctx)
         case Platform.NIXOS | Platform.NIXOS_WSL:
-            nixos_onepassword.run(ctx)
+            await nixos_onepassword.run(ctx)
         case Platform.LINUX_HM:
-            linux_onepassword.run(ctx)
+            await linux_onepassword.run(ctx)
         case _:
             raise BootstrapError(f"no onepassword phase for platform {ctx.platform.value}")
 
 
-def _dispatch_switch(ctx: Context) -> None:
+async def _dispatch_switch(ctx: Context) -> None:
     match ctx.platform:
         case Platform.DARWIN:
-            darwin_switch.run(ctx)
+            await darwin_switch.run(ctx)
         case Platform.NIXOS | Platform.NIXOS_WSL:
-            nixos_switch.run(ctx)
+            await nixos_switch.run(ctx)
         case Platform.LINUX_HM:
-            linux_switch.run(ctx)
+            await linux_switch.run(ctx)
         case _:
             raise BootstrapError(f"no switch phase for platform {ctx.platform.value}")
 
 
-def _dispatch_post(ctx: Context) -> None:
+async def _dispatch_post(ctx: Context) -> None:
     match ctx.platform:
         case Platform.DARWIN:
-            darwin_post.run(ctx)
+            await darwin_post.run(ctx)
         case Platform.NIXOS | Platform.NIXOS_WSL:
-            nixos_post.run(ctx)
+            await nixos_post.run(ctx)
         case Platform.LINUX_HM:
-            linux_post.run(ctx)
+            await linux_post.run(ctx)
         case _:
             raise BootstrapError(f"no post phase for platform {ctx.platform.value}")

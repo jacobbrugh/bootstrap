@@ -11,29 +11,30 @@ adds the key to the macOS keychain-backed ssh-agent and writes a
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from importlib import resources
 
-from bootstrap.lib import gh, log, ssh_ops
+from bootstrap.lib import gh, ssh_ops
 from bootstrap.lib.errors import PrereqMissing
 from bootstrap.lib.paths import SSH_KEY, SSH_KNOWN_HOSTS
 from bootstrap.lib.runtime import Context
 
 NAME = "ssh"
 
-_log = log.get(__name__)
+_log = logging.getLogger(__name__)
 
 
-def run(ctx: Context) -> None:
+async def run(ctx: Context) -> None:
     """Generate key, upload to GitHub, pin github.com host keys."""
-    if ctx.github_token is None:
+    if not ctx.dry_run and ctx.github_token is None:
         raise PrereqMissing(
             "ctx.github_token",
             where="wrap in `secrets.ephemeral_secrets(ctx)`",
         )
 
     comment = f"{ctx.hostname}-bootstrap"
-    ssh_ops.keygen(SSH_KEY, comment, dry_run=ctx.dry_run)
+    await ssh_ops.keygen(SSH_KEY, comment, dry_run=ctx.dry_run)
 
     _pin_github_host_keys(dry_run=ctx.dry_run)
 
@@ -41,10 +42,6 @@ def run(ctx: Context) -> None:
     today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
     title = f"bootstrap:{ctx.hostname}:{today}"
 
-    # The `gh api /user/keys` idempotency check is `destructive=False` so it
-    # runs even in dry-run — but with the dry-run fake token from
-    # `ephemeral_secrets`, it would fail 401 Unauthorized. Short-circuit the
-    # whole GitHub interaction here.
     if ctx.dry_run:
         _log.info(
             "[dry-run] would check GitHub for %s and upload with title %s if missing",
@@ -53,10 +50,14 @@ def run(ctx: Context) -> None:
         )
         return
 
-    if gh.ssh_key_registered(ctx.github_token, pubkey_path):
+    # The prereq check above guarantees ctx.github_token is not None at
+    # this point — the `if not ctx.dry_run` branch only lets through real
+    # runs, and the real-run branch requires the token.
+    assert ctx.github_token is not None
+    if await gh.ssh_key_registered(ctx.github_token, pubkey_path):
         _log.info("GitHub already has this public key — skipping upload")
     else:
-        gh.ssh_key_add(ctx.github_token, pubkey_path, title, dry_run=ctx.dry_run)
+        await gh.ssh_key_add(ctx.github_token, pubkey_path, title, dry_run=ctx.dry_run)
 
 
 def _pin_github_host_keys(*, dry_run: bool) -> None:

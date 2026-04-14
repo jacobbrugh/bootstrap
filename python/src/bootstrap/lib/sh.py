@@ -1,26 +1,25 @@
-"""Typed subprocess wrapper for the bootstrap.
+"""Async subprocess wrapper.
 
-Every shell interaction goes through `run`, `sudo_run`, `prime_sudo`, or
-`run_powershell`. Guarantees:
+Every external command goes through `run()`, `sudo_run()`, `prime_sudo()`,
+or `run_powershell()`. Never `shell=True`, never a string that gets split —
+`cmd` is always a `Sequence[str]` passed to `asyncio.create_subprocess_exec`.
 
-- never `shell=True` (no injection surface; all args explicit)
-- typed return value (`Result` dataclass with stdout, stderr, returncode, duration)
-- dry-run aware: destructive commands become no-ops that log "would run: …";
-  read-only commands (`destructive=False`) still execute so decision trees
-  can be exercised safely in dry-run mode
-- all commands logged at DEBUG via stdlib logging (Rich handler installed
-  by `bootstrap.lib.log`)
-
-`run_powershell` is designed but unused in this change — it locks in the
-contract for the Windows migration session so call sites can be added
-later without changing plumbing.
+Guarantees:
+- typed `Result` dataclass with stdout/stderr/returncode/duration
+- dry-run aware: destructive commands become a "would run: …" log with a
+  skipped Result; read-only commands (`destructive=False`) execute anyway
+  so decision trees are exercised under `--dry-run`
+- every invocation is logged at DEBUG with the full command line
+- `sudo_run` self-heals when Homebrew (or anything else) wipes the sudo
+  credential cache mid-phase: on a "password is required" failure it
+  re-runs `prime_sudo` once and retries the real command
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shlex
-import subprocess
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -47,7 +46,7 @@ class Result:
         return self.returncode == 0
 
 
-def run(
+async def run(
     cmd: Sequence[str],
     *,
     check: bool = True,
@@ -66,7 +65,7 @@ def run(
         capture: if True, capture stdout/stderr into the Result.
         cwd: working directory for the subprocess.
         env: environment. If None, inherits the parent process env.
-        input_text: text piped to stdin (implies `text=True`).
+        input_text: text piped to stdin. Implies stdin=PIPE.
         dry_run: if True AND `destructive`, skip execution and return a no-op Result.
         destructive: if False, the command runs even in dry-run mode (for read-only ops).
     """
@@ -87,24 +86,26 @@ def run(
     _log.debug("$ %s", rendered)
     start = time.monotonic()
     try:
-        completed = subprocess.run(
-            cmd_tuple,
-            check=False,
-            cwd=cwd,
+        proc = await asyncio.create_subprocess_exec(
+            *cmd_tuple,
+            stdin=asyncio.subprocess.PIPE if input_text is not None else None,
+            stdout=asyncio.subprocess.PIPE if capture else None,
+            stderr=asyncio.subprocess.PIPE if capture else None,
+            cwd=str(cwd) if cwd is not None else None,
             env=dict(env) if env is not None else None,
-            input=input_text,
-            text=True,
-            capture_output=capture,
         )
     except FileNotFoundError as exc:
         raise ShellError(list(cmd_tuple), 127, str(exc)) from exc
+
+    input_bytes = input_text.encode("utf-8") if input_text is not None else None
+    stdout_bytes, stderr_bytes = await proc.communicate(input=input_bytes)
     duration = time.monotonic() - start
 
     result = Result(
         cmd=cmd_tuple,
-        returncode=completed.returncode,
-        stdout=completed.stdout or "",
-        stderr=completed.stderr or "",
+        returncode=proc.returncode if proc.returncode is not None else -1,
+        stdout=stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else "",
+        stderr=stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else "",
         duration_s=duration,
     )
     if check and result.returncode != 0:
@@ -112,7 +113,7 @@ def run(
     return result
 
 
-def sudo_run(
+async def sudo_run(
     cmd: Sequence[str],
     *,
     check: bool = True,
@@ -132,8 +133,8 @@ def sudo_run(
     """
     sudo_cmd: tuple[str, ...] = ("sudo", "-n", *cmd)
 
-    def _invoke() -> Result:
-        return run(
+    async def _invoke() -> Result:
+        return await run(
             sudo_cmd,
             check=False,
             capture=capture,
@@ -143,13 +144,13 @@ def sudo_run(
             destructive=destructive,
         )
 
-    result = _invoke()
+    result = await _invoke()
     if result.dry_run_skipped or result.ok():
         return result
     if _sudo_cache_miss(result.stderr):
         _log.info("sudo credential cache was cleared; re-priming (you may be prompted)")
-        prime_sudo(dry_run=dry_run)
-        result = _invoke()
+        await prime_sudo(dry_run=dry_run)
+        result = await _invoke()
     if check and not result.ok():
         raise ShellError(list(result.cmd), result.returncode, result.stderr)
     return result
@@ -165,20 +166,33 @@ def _sudo_cache_miss(stderr: str) -> bool:
     return "password is required" in stderr
 
 
-def prime_sudo(*, dry_run: bool = False) -> None:
+async def prime_sudo(*, dry_run: bool = False) -> None:
     """Prime the sudo credential cache by prompting once, interactively.
 
     Must be called from an interactive context (TTY). `dry_run=True` skips
     the prompt entirely so dry-run flows never touch real sudo state.
+
+    Runs `sudo -v` as a real subprocess with stdin/stdout/stderr inherited
+    from the parent, so sudo talks to the user directly on the controlling
+    terminal via `/dev/tty` regardless of what fd 0 is.
     """
     if dry_run:
         _log.info("would run: sudo -v")
         return
     _log.info("priming sudo credential cache — you may be prompted for your password")
-    subprocess.run(["sudo", "-v"], check=True)
+    proc = await asyncio.create_subprocess_exec(
+        "sudo",
+        "-v",
+        stdin=None,
+        stdout=None,
+        stderr=None,
+    )
+    returncode = await proc.wait()
+    if returncode != 0:
+        raise ShellError(["sudo", "-v"], returncode, "")
 
 
-def run_powershell(
+async def run_powershell(
     script: str,
     *,
     shell: str = "powershell.exe",
@@ -202,7 +216,7 @@ def run_powershell(
         raise PlatformError(
             f"run_powershell requires Platform.NIXOS_WSL; detected {platform.value}"
         )
-    return run(
+    return await run(
         [shell, "-NoProfile", "-NonInteractive", "-Command", "-"],
         check=check,
         capture=capture,

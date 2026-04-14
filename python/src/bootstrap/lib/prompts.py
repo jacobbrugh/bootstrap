@@ -1,113 +1,82 @@
-"""Interactive prompt wrappers using stdlib `input()`.
+"""Async interactive prompts on top of questionary.
 
-Previous implementation used `questionary`, which wraps `prompt_toolkit`.
-`prompt_toolkit` runs its own asyncio loop and registers stdin as an
-async reader via kqueue on macOS; for reasons that are somewhere between
-"upstream Python asyncio bug" and "kqueue doesn't love /dev/tty", that
-registration fails with `OSError: [Errno 22] Invalid argument` the moment
-stdin is the controlling tty. The whole bootstrap then dies at the first
-prompt.
+`questionary` wraps `prompt_toolkit`, which is natively async. Both
+libraries have two APIs: a sync `.ask()` / `.prompt()` that is intended
+for "my whole program is sync and I just want a line of input", and an
+async `.ask_async()` / `.prompt_async()` that is intended for "my
+program is already running an asyncio event loop and I want to prompt
+from inside it." The sync API bridges by spinning up a throwaway
+asyncio event loop for each prompt; the async API cooperates with
+whatever loop the caller already has.
 
-`input()` does a plain blocking `read(0, …)` with no asyncio anywhere in
-sight. It works on piped stdin, on a tty, on `/dev/tty`, everywhere. We
-sacrifice the fancy arrow-key UX (which a once-per-machine bootstrap
-doesn't need) and get a prompt layer that actually works.
+The bootstrap's whole orchestrator + phase graph runs inside a single
+`asyncio.run(async_main())` call, so `ask_async()` is the correct
+integration path. Every prompt below is `async def` and awaits
+`questionary.<prompt>.ask_async()`.
 
-Every prompt still respects the caller's `non_interactive` flag.
+Every prompt respects the caller's `non_interactive` flag: when True the
+wrapper returns `default` (or raises `UserAbort` if no usable default).
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
+import questionary
+
 from bootstrap.lib.errors import UserAbort
 
 
-def text(
+async def text(
     message: str,
     *,
     default: str = "",
     non_interactive: bool,
 ) -> str:
-    """Prompt for a text value. Empty response returns `default`."""
+    """Prompt for a free-form string."""
     if non_interactive:
         if default:
             return default
         raise UserAbort(f"text prompt would block in non-interactive mode: {message}")
-    prompt = f"{message} [{default}] " if default else f"{message} "
-    try:
-        answer = input(prompt).strip()
-    except EOFError as exc:
-        raise UserAbort(f"stdin closed before answer: {message}") from exc
-    return answer or default
+    answer: object = await questionary.text(message, default=default).ask_async()
+    if answer is None:
+        raise UserAbort(f"user cancelled prompt: {message}")
+    if not isinstance(answer, str):
+        raise UserAbort(f"unexpected prompt return type: {type(answer).__name__}")
+    return answer
 
 
-def confirm(
+async def confirm(
     message: str,
     *,
     default: bool = False,
     non_interactive: bool,
 ) -> bool:
-    """Yes/no confirmation. Empty response returns `default`."""
+    """Yes/no confirmation."""
     if non_interactive:
         return default
-    suffix = "[Y/n]" if default else "[y/N]"
-    try:
-        answer = input(f"{message} {suffix} ").strip().lower()
-    except EOFError as exc:
-        raise UserAbort(f"stdin closed before answer: {message}") from exc
-    if not answer:
-        return default
-    if answer in ("y", "yes"):
-        return True
-    if answer in ("n", "no"):
-        return False
-    raise UserAbort(f"unrecognized yes/no response: {answer!r}")
+    answer: object = await questionary.confirm(message, default=default).ask_async()
+    if answer is None:
+        raise UserAbort(f"user cancelled prompt: {message}")
+    if not isinstance(answer, bool):
+        raise UserAbort(f"unexpected prompt return type: {type(answer).__name__}")
+    return answer
 
 
-def checkbox(
+async def checkbox(
     message: str,
     *,
     choices: Sequence[str],
     defaults: Sequence[str] = (),
     non_interactive: bool,
 ) -> list[str]:
-    """Multi-select numbered list. Empty response accepts the defaults.
-
-    Renders as:
-
-        message
-          [x] 1. foo
-          [ ] 2. bar
-          [x] 3. baz
-          numbers (space-separated) or empty for defaults:
-
-    Responses are 1-indexed numbers separated by spaces (or commas). Any
-    out-of-range or non-numeric token raises `UserAbort`.
-    """
+    """Multi-select checkbox. Returns the selected values in user-picked order."""
     if non_interactive:
         return list(defaults)
-    defaults_set = set(defaults)
-    print(message)
-    for i, choice in enumerate(choices, start=1):
-        marker = "x" if choice in defaults_set else " "
-        print(f"  [{marker}] {i}. {choice}")
-    try:
-        raw = input("  numbers (space-separated) or empty for defaults: ").strip()
-    except EOFError as exc:
-        raise UserAbort(f"stdin closed before answer: {message}") from exc
-    if not raw:
-        return list(defaults)
-    selected: list[str] = []
-    tokens = raw.replace(",", " ").split()
-    for tok in tokens:
-        try:
-            idx = int(tok) - 1
-        except ValueError as exc:
-            raise UserAbort(f"invalid selection {tok!r}") from exc
-        if idx < 0 or idx >= len(choices):
-            raise UserAbort(f"selection {tok} out of range 1..{len(choices)}")
-        choice = choices[idx]
-        if choice not in selected:
-            selected.append(choice)
-    return selected
+    q_choices = [questionary.Choice(c, checked=c in defaults) for c in choices]
+    answer: object = await questionary.checkbox(message, choices=q_choices).ask_async()
+    if answer is None:
+        raise UserAbort(f"user cancelled prompt: {message}")
+    if not isinstance(answer, list):
+        raise UserAbort(f"unexpected prompt return type: {type(answer).__name__}")
+    return [str(x) for x in answer]

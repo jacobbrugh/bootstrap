@@ -47,7 +47,7 @@ def _needs_sudo(dir_path: Path) -> bool:
     return dir_path.exists() and not os.access(dir_path, os.W_OK)
 
 
-def _mkdir(path: Path, *, dry_run: bool) -> None:
+async def _mkdir(path: Path, *, dry_run: bool) -> None:
     """mkdir -p, with sudo when necessary."""
     if path.exists():
         return
@@ -61,13 +61,13 @@ def _mkdir(path: Path, *, dry_run: bool) -> None:
         else:
             _log.info("would mkdir -p %s", path)
     else:
-        sh.sudo_run(["mkdir", "-p", str(path)], dry_run=dry_run, destructive=True)
+        await sh.sudo_run(["mkdir", "-p", str(path)], dry_run=dry_run, destructive=True)
 
 
-def _move(src: Path, dst: Path, *, dry_run: bool) -> None:
+async def _move(src: Path, dst: Path, *, dry_run: bool) -> None:
     """mv, with sudo when necessary."""
     if _needs_sudo(src.parent) or _needs_sudo(dst.parent):
-        sh.sudo_run(["mv", str(src), str(dst)], dry_run=dry_run, destructive=True)
+        await sh.sudo_run(["mv", str(src), str(dst)], dry_run=dry_run, destructive=True)
     else:
         if not dry_run:
             src.rename(dst)
@@ -75,16 +75,16 @@ def _move(src: Path, dst: Path, *, dry_run: bool) -> None:
             _log.info("would mv %s → %s", src, dst)
 
 
-def _symlink(target: Path, link: Path, *, dry_run: bool) -> None:
+async def _symlink(target: Path, link: Path, *, dry_run: bool) -> None:
     """ln -sfn, with sudo when necessary. Always atomic (ln -sfn replaces)."""
     args = ["ln", "-sfn", str(target), str(link)]
     if _needs_sudo(link.parent):
-        sh.sudo_run(args, dry_run=dry_run, destructive=True)
+        await sh.sudo_run(args, dry_run=dry_run, destructive=True)
     else:
-        sh.run(args, dry_run=dry_run, destructive=True)
+        await sh.run(args, dry_run=dry_run, destructive=True)
 
 
-def install_flake_symlink(platform: Platform, *, dry_run: bool = False) -> None:
+async def install_flake_symlink(platform: Platform, *, dry_run: bool = False) -> None:
     """Install the default-flake-path symlink for `platform`.
 
     Idempotent: re-runs check the existing symlink target and no-op if it
@@ -104,8 +104,8 @@ def install_flake_symlink(platform: Platform, *, dry_run: bool = False) -> None:
     elif link_path.exists():
         backup = link_path.with_suffix(link_path.suffix + ".before-bootstrap")
         _log.info("backing up existing %s to %s", link_path, backup)
-        _move(link_path, backup, dry_run=dry_run)
+        await _move(link_path, backup, dry_run=dry_run)
 
-    _mkdir(link_path.parent, dry_run=dry_run)
+    await _mkdir(link_path.parent, dry_run=dry_run)
     _log.info("symlinking %s → %s", link_path, target)
-    _symlink(target, link_path, dry_run=dry_run)
+    await _symlink(target, link_path, dry_run=dry_run)

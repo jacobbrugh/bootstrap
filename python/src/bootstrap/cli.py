@@ -3,16 +3,20 @@
 Each `[project.scripts]` entry point in `pyproject.toml` maps to a function
 here. The Typer app is the single source of truth for help text; the
 per-binary `phase_*` shims at the bottom delegate to it so subcommand and
-standalone-binary invocations share the same argument parsing and dry-run
-plumbing.
+standalone-binary invocations share the same argument parsing.
 
-The CLI itself is thin — every subcommand builds a `Context` from CLI
-flags + runtime detection and immediately calls into `orchestrator.run_*`,
-which owns OS dispatch, secrets context lifecycle, and phase logging.
+Typer callbacks are synchronous (Typer doesn't support async callbacks
+directly). Each callback wraps `asyncio.run(coroutine)` internally, so
+the entire orchestrator + phase graph runs inside one asyncio event loop
+per CLI invocation. `questionary.text(msg).ask_async()` and every
+subprocess call via `asyncio.create_subprocess_exec` cooperate with that
+single loop.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import sys
 from typing import Annotated
 
@@ -61,7 +65,7 @@ Verbose = Annotated[
 ]
 
 
-def _build_context(
+async def _build_context(
     *,
     dry_run: bool,
     non_interactive: bool,
@@ -71,7 +75,7 @@ def _build_context(
     platform = detect()
     if platform is Platform.UNSUPPORTED:
         raise BootstrapError(f"unsupported platform: {sys.platform}")
-    hostname = host_info.detect_hostname()
+    hostname = await host_info.detect_hostname()
     return Context(
         platform=platform,
         hostname=hostname,
@@ -83,9 +87,40 @@ def _build_context(
     )
 
 
-def _exit_on_bootstrap_error(exc: BootstrapError) -> typer.Exit:
-    log.get(__name__).error("[bold red]bootstrap failed:[/] %s", exc)
+def _fail_on_bootstrap_error(exc: BootstrapError) -> typer.Exit:
+    logging.getLogger(__name__).error("[bold red]bootstrap failed:[/] %s", exc)
     return typer.Exit(code=1)
+
+
+def _run_phase(
+    runner: asyncio.Future[None] | None,
+    *,
+    dry_run: bool,
+    non_interactive: bool,
+    verbose: bool,
+    entry: str,
+) -> None:
+    """Drive one CLI entry point through asyncio.run, handling BootstrapError.
+
+    `entry` is the orchestrator function name to call. We look it up via
+    getattr rather than taking a callable so the caller doesn't need to
+    annotate the awkward `Callable[[Context], Awaitable[None]]` type.
+    """
+    del runner  # unused, only exists to keep the type checker calm below
+
+    async def _go() -> None:
+        ctx = await _build_context(
+            dry_run=dry_run,
+            non_interactive=non_interactive,
+            verbose=verbose,
+        )
+        coro = getattr(orchestrator, entry)
+        await coro(ctx)
+
+    try:
+        asyncio.run(_go())
+    except BootstrapError as exc:
+        raise _fail_on_bootstrap_error(exc) from exc
 
 
 # ── root: full run when no subcommand is given ────────────────────────
@@ -101,15 +136,13 @@ def _root(
     """Run the full OS-appropriate phase list when no subcommand is given."""
     if typer_ctx.invoked_subcommand is not None:
         return
-    ctx = _build_context(
+    _run_phase(
+        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,
+        entry="run_full",
     )
-    try:
-        orchestrator.run_full(ctx)
-    except BootstrapError as exc:
-        raise _exit_on_bootstrap_error(exc) from exc
 
 
 # ── per-phase subcommands ──────────────────────────────────────────────
@@ -122,15 +155,13 @@ def _cmd_prereqs(
     verbose: Verbose = False,
 ) -> None:
     """Install OS prerequisites (Homebrew on Darwin; dirs elsewhere)."""
-    ctx = _build_context(
+    _run_phase(
+        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,
+        entry="run_prereqs",
     )
-    try:
-        orchestrator.run_prereqs(ctx)
-    except BootstrapError as exc:
-        raise _exit_on_bootstrap_error(exc) from exc
 
 
 @app.command("onepassword")
@@ -140,15 +171,13 @@ def _cmd_onepassword(
     verbose: Verbose = False,
 ) -> None:
     """Install 1Password (Darwin) and wait for sign-in."""
-    ctx = _build_context(
+    _run_phase(
+        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,
+        entry="run_onepassword",
     )
-    try:
-        orchestrator.run_onepassword(ctx)
-    except BootstrapError as exc:
-        raise _exit_on_bootstrap_error(exc) from exc
 
 
 @app.command("ssh")
@@ -158,15 +187,13 @@ def _cmd_ssh(
     verbose: Verbose = False,
 ) -> None:
     """Generate SSH key, upload to GitHub, add to keychain (Darwin)."""
-    ctx = _build_context(
+    _run_phase(
+        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,
+        entry="run_ssh",
     )
-    try:
-        orchestrator.run_ssh(ctx)
-    except BootstrapError as exc:
-        raise _exit_on_bootstrap_error(exc) from exc
 
 
 @app.command("register")
@@ -176,15 +203,13 @@ def _cmd_register(
     verbose: Verbose = False,
 ) -> None:
     """Clone dotfiles + register this host in registry.toml + .sops.yaml."""
-    ctx = _build_context(
+    _run_phase(
+        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,
+        entry="run_register",
     )
-    try:
-        orchestrator.run_register(ctx)
-    except BootstrapError as exc:
-        raise _exit_on_bootstrap_error(exc) from exc
 
 
 @app.command("switch")
@@ -194,15 +219,13 @@ def _cmd_switch(
     verbose: Verbose = False,
 ) -> None:
     """Run the OS-native switch (darwin-rebuild / nixos-rebuild / home-manager)."""
-    ctx = _build_context(
+    _run_phase(
+        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,
+        entry="run_switch",
     )
-    try:
-        orchestrator.run_switch(ctx)
-    except BootstrapError as exc:
-        raise _exit_on_bootstrap_error(exc) from exc
 
 
 @app.command("post")
@@ -212,15 +235,13 @@ def _cmd_post(
     verbose: Verbose = False,
 ) -> None:
     """Auto-open System Settings panes for manual TCC gates (Darwin)."""
-    ctx = _build_context(
+    _run_phase(
+        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,
+        entry="run_post",
     )
-    try:
-        orchestrator.run_post(ctx)
-    except BootstrapError as exc:
-        raise _exit_on_bootstrap_error(exc) from exc
 
 
 # ── module-level entry function for the `bootstrap` console_script ─────

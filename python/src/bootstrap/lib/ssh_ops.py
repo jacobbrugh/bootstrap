@@ -17,21 +17,21 @@ STANZA_BEGIN = "# managed-by: bootstrap begin"
 STANZA_END = "# managed-by: bootstrap end"
 
 
-def keygen(path: Path, comment: str, *, dry_run: bool = False) -> None:
+async def keygen(path: Path, comment: str, *, dry_run: bool = False) -> None:
     """Generate an ed25519 SSH keypair at `path` if it doesn't already exist."""
     if path.exists():
         _log.debug("SSH key already exists at %s", path)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.parent.chmod(stat.S_IRWXU)
-    sh.run(
+    await sh.run(
         ["ssh-keygen", "-t", "ed25519", "-f", str(path), "-C", comment, "-N", ""],
         dry_run=dry_run,
         destructive=True,
     )
 
 
-def apple_keychain_add(key_path: Path, *, dry_run: bool = False) -> None:
+async def apple_keychain_add(key_path: Path, *, dry_run: bool = False) -> None:
     """Add an SSH key to the macOS keychain-backed ssh-agent.
 
     Darwin-only. The caller is OS-gated (only Darwin phases invoke this).
@@ -40,7 +40,7 @@ def apple_keychain_add(key_path: Path, *, dry_run: bool = False) -> None:
     upstream ssh-add shipped by nixpkgs (which the bootstrap wrapper
     otherwise puts first on PATH).
     """
-    sh.run(
+    await sh.run(
         ["/usr/bin/ssh-add", "--apple-use-keychain", str(key_path)],
         dry_run=dry_run,
         destructive=True,
@@ -58,6 +58,8 @@ def merge_config_stanza(
     The stanza is wrapped in `# managed-by: bootstrap begin` / `end` marker
     comments. On re-runs, the existing marked block is replaced; user-authored
     content outside the markers is untouched.
+
+    Pure file I/O — no subprocess — so this stays synchronous.
     """
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.parent.chmod(stat.S_IRWXU)
@@ -93,6 +95,8 @@ def update_known_hosts(
     against the existing `known_hosts`, and append whatever's new. We NEVER
     call `ssh-keyscan` — all keys come from the pinned file, which is
     updated out-of-band from `https://api.github.com/meta`.
+
+    Pure file I/O — no subprocess — so this stays synchronous.
     """
     if not pinned_keys_file.exists():
         raise WorkingTreeError(

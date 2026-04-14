@@ -22,12 +22,12 @@ def _env_with_token(token: str) -> dict[str, str]:
     return env
 
 
-def ssh_key_registered(token: str, pubkey_path: Path) -> bool:
+async def ssh_key_registered(token: str, pubkey_path: Path) -> bool:
     """Return True iff the public key at `pubkey_path` is already registered.
 
-    Checks by **content**, not by title. The previous implementation matched
-    on the `bootstrap:<host>:<YYYY-MM-DD>` title, which caused an insidious
-    bug: if a re-run regenerates `~/.ssh/id_ed25519` (e.g. after a path-
+    Checks by **content**, not by title. Matching on the
+    `bootstrap:<host>:<YYYY-MM-DD>` title caused a silent-divergence bug:
+    if a re-run regenerates `~/.ssh/id_ed25519` (e.g. after a path-
     convention change), the old GitHub title is still there pointing at the
     *old* pubkey, so we'd skip the upload and silently leave a mismatch —
     local SSH auth then fails with `Permission denied (publickey)` the next
@@ -41,7 +41,7 @@ def ssh_key_registered(token: str, pubkey_path: Path) -> bool:
     local_head = _pubkey_head(pubkey_path)
     if local_head is None:
         return False
-    result = sh.run(
+    result = await sh.run(
         ["gh", "api", "/user/keys", "--jq", ".[].key"],
         env=_env_with_token(token),
         destructive=False,
@@ -70,7 +70,7 @@ def _pubkey_head(pubkey_path: Path) -> str | None:
     return " ".join(parts[:2])
 
 
-def ssh_key_add(
+async def ssh_key_add(
     token: str,
     pubkey_path: Path,
     title: str,
@@ -84,7 +84,7 @@ def ssh_key_add(
     `bootstrap:<hostname>:<YYYY-MM-DD>`.
     """
     _log.info("uploading SSH key to GitHub: title=%s", title)
-    sh.run(
+    await sh.run(
         [
             "gh",
             "ssh-key",

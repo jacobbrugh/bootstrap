@@ -16,13 +16,17 @@ Full decision tree:
 5. Ensure the OS-specific default flake path is a symlink to the canonical
    repo (always runs, idempotent).
 
-Every sub-flow that modifies files uses `git_ops.diff_scope_check` as a
-paranoid guard before committing, so we never accidentally bundle
-unrelated changes into the registration commit.
+No transactional rollback or paranoid "did anything else change?" guard:
+the commit step uses `git add -- <explicit paths>`, which by construction
+only stages the paths we listed. If any step before `commit` fails, the
+exception propagates, nothing is committed, and the next re-run picks up
+whatever state is left (clone_or_pull will re-pull or error on a dirty
+tree, both of which are safer than a git-reset-hard on exception).
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -30,7 +34,6 @@ from bootstrap.lib import (
     age_ops,
     git_ops,
     host_info,
-    log,
     prompts,
     registry_toml,
     sh,
@@ -41,7 +44,6 @@ from bootstrap.lib import (
 from bootstrap.lib.errors import (
     BootstrapError,
     DecisionTreeError,
-    PrereqMissing,
     UserAbort,
 )
 from bootstrap.lib.paths import (
@@ -53,7 +55,7 @@ from bootstrap.platform import Platform
 
 NAME = "register"
 
-_log = log.get(__name__)
+_log = logging.getLogger(__name__)
 
 # Tags that, when present on a host, exclude the host from `nix/secrets.yaml`
 # and scope it to `nix/bot-secrets.yaml` only. Mirrors the creation_rules
@@ -67,15 +69,9 @@ _BOT_SECRETS_REL = Path("nix/bot-secrets.yaml")
 _SECRETS_REL = Path("nix/secrets.yaml")
 
 
-def run(ctx: Context) -> None:
-    if ctx.bootstrap_age_key_file is None:
-        raise PrereqMissing(
-            "ctx.bootstrap_age_key_file",
-            where="wrap in `secrets.ephemeral_secrets(ctx)`",
-        )
-
+async def run(ctx: Context) -> None:
     # 1. Canonical repo ----------------------------------------------------
-    git_ops.clone_or_pull(
+    await git_ops.clone_or_pull(
         DOTFILES_GIT_REMOTE,
         ctx.canonical_repo,
         dry_run=ctx.dry_run,
@@ -97,7 +93,7 @@ def run(ctx: Context) -> None:
             ctx.canonical_repo,
             ctx.canonical_repo,
         )
-        _ensure_symlink(ctx)
+        await _ensure_symlink(ctx)
         return
 
     # 2. Hostname prompt ---------------------------------------------------
@@ -106,7 +102,7 @@ def run(ctx: Context) -> None:
     # (DNS-safe lowercase). Lowercase the default so accepting it Just
     # Works. If the user types a mixed-case name, validate_hostname raises
     # a clear error — that's fine.
-    chosen = prompts.text(
+    chosen = await prompts.text(
         "hostname for this machine:",
         default=ctx.hostname.lower(),
         non_interactive=ctx.non_interactive,
@@ -116,8 +112,8 @@ def run(ctx: Context) -> None:
     # 3. Darwin rename if needed ------------------------------------------
     if chosen != ctx.hostname and ctx.platform is Platform.DARWIN:
         _log.info("renaming machine from %s to %s", ctx.hostname, chosen)
-        sh.prime_sudo(dry_run=ctx.dry_run)
-        host_info.rename_darwin(chosen, dry_run=ctx.dry_run)
+        await sh.prime_sudo(dry_run=ctx.dry_run)
+        await host_info.rename_darwin(chosen, dry_run=ctx.dry_run)
         ctx.hostname = chosen
     elif chosen != ctx.hostname:
         # On Linux/NixOS we don't auto-rename — the nixos-rebuild config
@@ -139,7 +135,7 @@ def run(ctx: Context) -> None:
     local_key_present = SOPS_AGE_KEY_FILE.exists()
 
     if host_in_registry and local_key_present:
-        local_pubkey = age_ops.extract_public_key(SOPS_AGE_KEY_FILE)
+        local_pubkey = await age_ops.extract_public_key(SOPS_AGE_KEY_FILE)
         registered_pubkey = sops_yaml.get_registered_pubkey(sops_doc, anchor_name)
         if registered_pubkey is not None:
             if registered_pubkey == local_pubkey:
@@ -147,7 +143,7 @@ def run(ctx: Context) -> None:
                     "host %s already registered with matching age key — skipping edit",
                     hostname,
                 )
-                _ensure_symlink(ctx)
+                await _ensure_symlink(ctx)
                 return
             raise DecisionTreeError(
                 f"local age key at {SOPS_AGE_KEY_FILE} does not match the pubkey "
@@ -163,7 +159,7 @@ def run(ctx: Context) -> None:
         )
 
     if host_in_registry and not local_key_present:
-        regenerate = prompts.confirm(
+        regenerate = await prompts.confirm(
             f"Host {hostname} is registered but no local age key exists at "
             f"{SOPS_AGE_KEY_FILE}. Generate a new key and replace the registered one?",
             default=False,
@@ -177,54 +173,52 @@ def run(ctx: Context) -> None:
         sops_yaml.remove_age_key(sops_doc, anchor_name)
 
     # 5. Register / re-register --------------------------------------------
-    # Everything from here through `git push` is wrapped in a transactional
-    # edit context: if any step fails, the working tree AND any commits
-    # created in the block are rolled back to the entry HEAD so the next
-    # bootstrap run starts clean. Only the host's own age-key file on disk
-    # lives outside the transaction — it's created idempotently and a
-    # later run will pick it up.
-    tags = _select_tags(ctx)
+    tags = await _select_tags(ctx)
     system = host_info.system_string()
 
     touched_sops: list[Path] = [_SOPS_YAML_REL, _BOT_SECRETS_REL]
     if not _NON_SENSITIVE_TAGS.intersection(tags):
         touched_sops.append(_SECRETS_REL)
 
-    with git_ops.transactional_edit(ctx.canonical_repo, dry_run=ctx.dry_run):
-        pubkey = _ensure_age_key(ctx)
+    pubkey = await _ensure_age_key(ctx)
 
-        if host_in_registry:
-            _log.info("re-registering %s (existing entry)", hostname)
-        else:
-            registry_toml.add_host(registry, hostname, system=system, tags=tags)
-            _log.info("added %s to registry.toml", hostname)
+    if host_in_registry:
+        _log.info("re-registering %s (existing entry)", hostname)
+    else:
+        registry_toml.add_host(registry, hostname, system=system, tags=tags)
+        _log.info("added %s to registry.toml", hostname)
 
-        sops_yaml.add_age_key(sops_doc, anchor_name, pubkey)
+    sops_yaml.add_age_key(sops_doc, anchor_name, pubkey)
+    sops_yaml.add_to_creation_rule(
+        sops_doc,
+        _BOT_SECRETS_REL.as_posix() + "$",
+        anchor_name,
+    )
+    if _SECRETS_REL in touched_sops:
         sops_yaml.add_to_creation_rule(
             sops_doc,
-            _BOT_SECRETS_REL.as_posix() + "$",
+            _SECRETS_REL.as_posix() + "$",
             anchor_name,
         )
-        if _SECRETS_REL in touched_sops:
-            sops_yaml.add_to_creation_rule(
-                sops_doc,
-                _SECRETS_REL.as_posix() + "$",
-                anchor_name,
-            )
 
-        if not ctx.dry_run:
-            registry_toml.save(registry, registry_path)
-            sops_yaml.save(sops_doc, sops_path)
+    if not ctx.dry_run:
+        registry_toml.save(registry, registry_path)
+        sops_yaml.save(sops_doc, sops_path)
 
-        # sops updatekeys — re-encrypt secret files against the new recipient list.
-        sops_ops.update_keys(
+    # sops updatekeys — re-encrypt secret files against the new recipient list.
+    # In dry-run, ctx.bootstrap_age_key_file is None because ephemeral_secrets
+    # didn't touch 1Password. The sh.run inside update_keys is destructive=True,
+    # so it becomes a "would run" log without actually reading the None path.
+    if not ctx.dry_run:
+        assert ctx.bootstrap_age_key_file is not None
+        await sops_ops.update_keys(
             bot_secrets_path,
             age_key_file=ctx.bootstrap_age_key_file,
             repo=ctx.canonical_repo,
             dry_run=ctx.dry_run,
         )
         if _SECRETS_REL in touched_sops:
-            sops_ops.update_keys(
+            await sops_ops.update_keys(
                 secrets_path,
                 age_key_file=ctx.bootstrap_age_key_file,
                 repo=ctx.canonical_repo,
@@ -234,48 +228,42 @@ def run(ctx: Context) -> None:
         # Verify the re-encryption actually added the new host's key. We
         # read with the local (NEW) age key, not the bootstrap key — if
         # the new host key isn't in the recipient list, this fails.
-        if not ctx.dry_run:
-            sops_ops.verify_decrypt(
-                bot_secrets_path,
+        await sops_ops.verify_decrypt(
+            bot_secrets_path,
+            age_key_file=SOPS_AGE_KEY_FILE,
+            repo=ctx.canonical_repo,
+        )
+        if _SECRETS_REL in touched_sops:
+            await sops_ops.verify_decrypt(
+                secrets_path,
                 age_key_file=SOPS_AGE_KEY_FILE,
                 repo=ctx.canonical_repo,
             )
-            if _SECRETS_REL in touched_sops:
-                sops_ops.verify_decrypt(
-                    secrets_path,
-                    age_key_file=SOPS_AGE_KEY_FILE,
-                    repo=ctx.canonical_repo,
-                )
 
-        # Paranoid scope check before committing.
-        allowed: set[Path] = {_REGISTRY_REL, *touched_sops}
-        if not ctx.dry_run:
-            git_ops.diff_scope_check(ctx.canonical_repo, allowed)
-
-        commit_msg = _format_commit_message(hostname, system, tags, touched_sops)
-        git_ops.commit(
-            ctx.canonical_repo,
-            [_REGISTRY_REL, *touched_sops],
-            commit_msg,
-            dry_run=ctx.dry_run,
-        )
-        git_ops.push(ctx.canonical_repo, dry_run=ctx.dry_run)
+    commit_msg = _format_commit_message(hostname, system, tags, touched_sops)
+    await git_ops.commit(
+        ctx.canonical_repo,
+        [_REGISTRY_REL, *touched_sops],
+        commit_msg,
+        dry_run=ctx.dry_run,
+    )
+    await git_ops.push(ctx.canonical_repo, dry_run=ctx.dry_run)
 
     # 6. Symlink default flake path ---------------------------------------
-    _ensure_symlink(ctx)
+    await _ensure_symlink(ctx)
 
 
 # ── helpers ────────────────────────────────────────────────────────────
 
 
-def _ensure_age_key(ctx: Context) -> str:
+async def _ensure_age_key(ctx: Context) -> str:
     """Generate the host's own age keypair if missing. Return the public key."""
     if SOPS_AGE_KEY_FILE.exists():
-        return age_ops.extract_public_key(SOPS_AGE_KEY_FILE)
-    return age_ops.generate_keypair(SOPS_AGE_KEY_FILE, dry_run=ctx.dry_run)
+        return await age_ops.extract_public_key(SOPS_AGE_KEY_FILE)
+    return await age_ops.generate_keypair(SOPS_AGE_KEY_FILE, dry_run=ctx.dry_run)
 
 
-def _select_tags(ctx: Context) -> list[str]:
+async def _select_tags(ctx: Context) -> list[str]:
     """Prompt the user for tags, enumerated from `nix/config/tags/*.nix`."""
     tags_dir = ctx.canonical_repo / "nix" / "config" / "tags"
     if not tags_dir.exists():
@@ -283,16 +271,16 @@ def _select_tags(ctx: Context) -> list[str]:
     choices = sorted(f.stem for f in tags_dir.glob("*.nix") if f.stem != "default")
     if not choices:
         raise BootstrapError(f"no tag modules found under {tags_dir}")
-    return prompts.checkbox(
+    return await prompts.checkbox(
         "select tags for this host (space to toggle, enter to confirm):",
         choices=choices,
         non_interactive=ctx.non_interactive,
     )
 
 
-def _ensure_symlink(ctx: Context) -> None:
+async def _ensure_symlink(ctx: Context) -> None:
     """Install the OS default flake-path symlink if not already correct."""
-    symlinks.install_flake_symlink(ctx.platform, dry_run=ctx.dry_run)
+    await symlinks.install_flake_symlink(ctx.platform, dry_run=ctx.dry_run)
 
 
 def _format_commit_message(

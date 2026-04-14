@@ -23,7 +23,7 @@ def _env_with_age_key(age_key_file: Path) -> dict[str, str]:
     return env
 
 
-def update_keys(
+async def update_keys(
     secret_file: Path,
     *,
     age_key_file: Path,
@@ -36,7 +36,7 @@ def update_keys(
     dotfiles repo root, not the caller's cwd.
     """
     _log.info("sops updatekeys: %s", secret_file)
-    sh.run(
+    await sh.run(
         ["sops", "updatekeys", "--yes", str(secret_file)],
         env=_env_with_age_key(age_key_file),
         cwd=repo,
@@ -45,7 +45,7 @@ def update_keys(
     )
 
 
-def verify_decrypt(
+async def verify_decrypt(
     secret_file: Path,
     *,
     age_key_file: Path,
@@ -57,7 +57,7 @@ def verify_decrypt(
     exit code is zero. Used after `update_keys` to prove the new key was
     actually added to the recipient list before we commit.
     """
-    sh.run(
+    await sh.run(
         ["sops", "--decrypt", str(secret_file)],
         env=_env_with_age_key(age_key_file),
         cwd=repo,

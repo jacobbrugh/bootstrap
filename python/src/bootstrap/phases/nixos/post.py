@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from bootstrap.lib import log
+import logging
+
 from bootstrap.lib.runtime import Context
 
 NAME = "post"
 
-_log = log.get(__name__)
+_log = logging.getLogger(__name__)
 
 
-def run(ctx: Context) -> None:
+async def run(ctx: Context) -> None:
     del ctx
     _log.info("[bold green]bootstrap complete[/] — no manual follow-ups on NixOS")

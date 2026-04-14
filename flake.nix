@@ -56,6 +56,7 @@
           dependencies = with pkgs.python3.pkgs; [
             typer
             rich
+            questionary
             tomlkit
             ruamel-yaml
           ];
@@ -196,6 +197,7 @@
               mypy
               typer
               rich
+              questionary
               tomlkit
               ruamel-yaml
             ]

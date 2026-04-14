@@ -7,16 +7,17 @@ doesn't touch /etc). The tools we need at runtime (`git`, `gh`, `sops`, `age`,
 
 from __future__ import annotations
 
-from bootstrap.lib import log
+import logging
+
 from bootstrap.lib.paths import SOPS_AGE_DIR, SSH_DIR
 from bootstrap.lib.runtime import Context
 
 NAME = "prereqs"
 
-_log = log.get(__name__)
+_log = logging.getLogger(__name__)
 
 
-def run(ctx: Context) -> None:
+async def run(ctx: Context) -> None:
     for path in (SSH_DIR, SOPS_AGE_DIR):
         if path.exists():
             continue

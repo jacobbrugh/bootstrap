@@ -7,17 +7,19 @@ and no `--flake` argument is needed.
 
 from __future__ import annotations
 
-from bootstrap.lib import log, sh
+import logging
+
+from bootstrap.lib import sh
 from bootstrap.lib.runtime import Context
 
 NAME = "switch"
 
-_log = log.get(__name__)
+_log = logging.getLogger(__name__)
 
 
-def run(ctx: Context) -> None:
+async def run(ctx: Context) -> None:
     _log.info("running `sudo nixos-rebuild switch`")
-    sh.sudo_run(
+    await sh.sudo_run(
         ["nixos-rebuild", "switch"],
         dry_run=ctx.dry_run,
         destructive=True,

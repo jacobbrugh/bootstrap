@@ -16,7 +16,7 @@ from bootstrap.lib import sh
 _log = logging.getLogger(__name__)
 
 
-def generate_keypair(key_file: Path, *, dry_run: bool = False) -> str:
+async def generate_keypair(key_file: Path, *, dry_run: bool = False) -> str:
     """Generate a post-quantum age keypair at `key_file`.
 
     Returns the public key. The parent directory is created with mode 0700
@@ -26,7 +26,7 @@ def generate_keypair(key_file: Path, *, dry_run: bool = False) -> str:
     key_file.parent.mkdir(parents=True, exist_ok=True)
     key_file.parent.chmod(stat.S_IRWXU)
 
-    sh.run(
+    await sh.run(
         ["age-keygen", "-pq", "-o", str(key_file)],
         dry_run=dry_run,
         destructive=True,
@@ -34,16 +34,16 @@ def generate_keypair(key_file: Path, *, dry_run: bool = False) -> str:
     if dry_run:
         return "age1pq1DRYRUN"
     key_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
-    return extract_public_key(key_file)
+    return await extract_public_key(key_file)
 
 
-def extract_public_key(key_file: Path) -> str:
+async def extract_public_key(key_file: Path) -> str:
     """Extract the public key from an existing age identity file.
 
     `age-keygen -y <file>` reads the identity and prints the corresponding
     recipient (public key) to stdout.
     """
-    result = sh.run(
+    result = await sh.run(
         ["age-keygen", "-y", str(key_file)],
         destructive=False,
     )

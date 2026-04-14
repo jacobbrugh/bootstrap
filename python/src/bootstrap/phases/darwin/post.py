@@ -10,15 +10,17 @@ Mac without MDM.
 
 from __future__ import annotations
 
-from bootstrap.lib import log, sh, tcc
+import logging
+
+from bootstrap.lib import sh, tcc
 from bootstrap.lib.runtime import Context
 
 NAME = "post"
 
-_log = log.get(__name__)
+_log = logging.getLogger(__name__)
 
 
-def run(ctx: Context) -> None:
+async def run(ctx: Context) -> None:
     _log.info(
         "[bold green]bootstrap complete[/] — opening System Settings panes "
         "for the manual TCC gates",
@@ -30,7 +32,7 @@ def run(ctx: Context) -> None:
             ", ".join(step.required_by),
         )
         _log.info("    %s", step.instructions)
-        sh.run(
+        await sh.run(
             ["open", step.pane_url],
             check=False,  # best-effort — never fail the bootstrap here
             dry_run=ctx.dry_run,

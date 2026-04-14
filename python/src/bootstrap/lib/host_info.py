@@ -46,22 +46,22 @@ def system_string() -> str:
     raise BootstrapError(f"unsupported sys.platform: {current!r}")
 
 
-def detect_hostname() -> str:
+async def detect_hostname() -> str:
     """Return the current machine's hostname.
 
     Darwin: `scutil --get LocalHostName`. Linux / NixOS / WSL: `hostname -s`.
     """
     platform = detect()
     if platform is Platform.DARWIN:
-        result = sh.run(["scutil", "--get", "LocalHostName"], destructive=False)
+        result = await sh.run(["scutil", "--get", "LocalHostName"], destructive=False)
         return result.stdout.strip()
     if platform in (Platform.NIXOS, Platform.NIXOS_WSL, Platform.LINUX_HM):
-        result = sh.run(["hostname", "-s"], destructive=False)
+        result = await sh.run(["hostname", "-s"], destructive=False)
         return result.stdout.strip()
     raise BootstrapError(f"cannot detect hostname on platform {platform.value}")
 
 
-def rename_darwin(new_name: str, *, dry_run: bool = False) -> None:
+async def rename_darwin(new_name: str, *, dry_run: bool = False) -> None:
     """Rename the macOS machine at the OS level.
 
     Sets `LocalHostName`, `ComputerName`, and `HostName` via `scutil --set`.
@@ -71,7 +71,7 @@ def rename_darwin(new_name: str, *, dry_run: bool = False) -> None:
     """
     validate_hostname(new_name)
     for key in ("LocalHostName", "ComputerName", "HostName"):
-        sh.sudo_run(
+        await sh.sudo_run(
             ["scutil", "--set", key, new_name],
             dry_run=dry_run,
             destructive=True,
@@ -79,7 +79,7 @@ def rename_darwin(new_name: str, *, dry_run: bool = False) -> None:
     if dry_run:
         return
     for key in ("LocalHostName", "HostName"):
-        result = sh.run(["scutil", "--get", key], destructive=False)
+        result = await sh.run(["scutil", "--get", key], destructive=False)
         actual = result.stdout.strip()
         if actual != new_name:
             raise BootstrapError(

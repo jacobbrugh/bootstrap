@@ -9,15 +9,16 @@ replaces them with symlinks into `/etc/static/`).
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from bootstrap.lib import brew, log, sh
+from bootstrap.lib import brew, sh
 from bootstrap.lib.paths import SOPS_AGE_DIR, SSH_DIR
 from bootstrap.lib.runtime import Context
 
 NAME = "prereqs"
 
-_log = log.get(__name__)
+_log = logging.getLogger(__name__)
 
 # Files created by the Nix installer that nix-darwin wants to manage itself.
 # Move them to a `.before-nix-darwin` suffix so activation can proceed.
@@ -28,17 +29,17 @@ _NIX_DARWIN_CONFLICTS: tuple[Path, ...] = (
 )
 
 
-def run(ctx: Context) -> None:
+async def run(ctx: Context) -> None:
     _log.info("priming sudo (you may be prompted once for your password)")
-    sh.prime_sudo(dry_run=ctx.dry_run)
+    await sh.prime_sudo(dry_run=ctx.dry_run)
 
-    brew.install_script(dry_run=ctx.dry_run)
+    await brew.install_script(dry_run=ctx.dry_run)
 
     _ensure_dir(SSH_DIR, dry_run=ctx.dry_run)
     _ensure_dir(SOPS_AGE_DIR, dry_run=ctx.dry_run)
 
     for conflict in _NIX_DARWIN_CONFLICTS:
-        _resolve_nix_darwin_conflict(conflict, dry_run=ctx.dry_run)
+        await _resolve_nix_darwin_conflict(conflict, dry_run=ctx.dry_run)
 
 
 def _ensure_dir(path: Path, *, dry_run: bool) -> None:
@@ -51,7 +52,7 @@ def _ensure_dir(path: Path, *, dry_run: bool) -> None:
     path.chmod(0o700)
 
 
-def _resolve_nix_darwin_conflict(path: Path, *, dry_run: bool) -> None:
+async def _resolve_nix_darwin_conflict(path: Path, *, dry_run: bool) -> None:
     """Move a regular file at `path` aside so nix-darwin can manage it."""
     if not path.exists() or path.is_symlink():
         return
@@ -60,7 +61,7 @@ def _resolve_nix_darwin_conflict(path: Path, *, dry_run: bool) -> None:
         _log.debug("%s already backed up at %s", path, backup)
         return
     _log.info("moving %s aside to %s", path, backup)
-    sh.sudo_run(
+    await sh.sudo_run(
         ["mv", str(path), str(backup)],
         dry_run=dry_run,
         destructive=True,
