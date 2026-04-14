@@ -1,4 +1,4 @@
-"""NixOS onepassword — poll `op whoami` until the user signs in."""
+"""NixOS onepassword — block until the 1Password CLI can read account data."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ def run(ctx: Context) -> None:
     if ctx.dry_run:
         _log.info("would wait for 1Password CLI sign-in")
         return
-    if op.whoami():
-        _log.info("1Password CLI is already signed in")
+    if op.is_signed_in():
+        _log.info("1Password CLI already able to read data")
         return
     _log.info(
         "sign in to 1Password in another terminal: [bold]op signin[/] "

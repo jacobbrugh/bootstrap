@@ -2,73 +2,60 @@
 
 All calls go through `op` with `--format=json` where available, so we get
 structured output instead of parsing ad-hoc text. The phase that uses this
-assumes `op` has been signed in to at least one account — the `ephemeral_secrets`
-phase polls `signin_wait` to block until that's true.
+assumes `op` has been "signed in" in the sense that it can actually read
+items — which, with the macOS desktop-app integration, is *not* the same
+as `op whoami` succeeding.
 
-On macOS the 1Password desktop app verifies CLI authenticity via XPC code
-signature checks (Developer ID `2BUA8C4S2C`, AgileBits Inc.). The Nix-
-packaged `_1password-cli` is not AgileBits-signed and is rejected by the
-desktop app's XPC server, so every `op` call returns "account is not
-signed in" — even with "Integrate with 1Password CLI" enabled. Use the
-Homebrew-installed binary instead, which ships the official signed `op`.
-See https://developer.1password.com/docs/cli/app-integration-security/.
+Why `op whoami` is the wrong readiness check for integration users:
+
+`op whoami` only reports on a persistent sign-in session (the kind you
+get from `eval $(op signin)`). Desktop-app integration doesn't use a
+persistent session; instead, each command that needs secrets triggers a
+GUI unlock on demand and gets a per-command session. `op whoami` never
+triggers integration unlock and therefore always reports "account is not
+signed in" for integration users, even though `op read` and
+`op vault list` work fine in the same shell.
+
+So we poll with `op user get --me --format=json`, which is a lightweight
+read that *does* engage integration (first call triggers unlock, user
+approves, subsequent calls inside the 30-minute session succeed without
+re-prompting). That's the readiness signal that actually maps to "can
+we call `op read` on the bootstrap age key".
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 
 from bootstrap.lib import sh
 from bootstrap.lib.errors import PrereqMissing
-from bootstrap.platform import Platform, detect
 
 _log = logging.getLogger(__name__)
 
-# Canonical locations the Homebrew `1password-cli` cask drops the
-# AgileBits-signed binary on macOS. Apple Silicon writes to /opt/homebrew,
-# Intel to /usr/local; the .pkg-based cask may also place it under
-# /usr/local on Apple Silicon, so check both.
-_DARWIN_OP_PATHS = ("/opt/homebrew/bin/op", "/usr/local/bin/op")
 
-
-def _op_binary() -> str:
-    """Return the best `op` binary path for the current platform.
-
-    On Darwin, prefer the Homebrew-installed signed binary so the desktop
-    app accepts XPC connections from it. On other platforms, fall back to
-    PATH (Nix's wrapper-injected `op` for the bootstrap process).
-    """
-    if detect() is Platform.DARWIN:
-        for candidate in _DARWIN_OP_PATHS:
-            if os.path.exists(candidate):
-                return candidate
-    return "op"
-
-
-def _whoami_result() -> sh.Result:
+def _user_me_result() -> sh.Result:
     return sh.run(
-        [_op_binary(), "whoami", "--format=json"],
+        ["op", "user", "get", "--me", "--format=json"],
         check=False,
         destructive=False,
     )
 
 
-def _parse_whoami(result: sh.Result) -> bool:
+def _parse_user_me(result: sh.Result) -> bool:
     if not result.ok():
         return False
     try:
         parsed = json.loads(result.stdout)
     except json.JSONDecodeError:
         return False
-    return isinstance(parsed, dict) and "user_uuid" in parsed
+    return isinstance(parsed, dict) and "id" in parsed
 
 
-def whoami() -> bool:
-    """Return True if `op` is signed in to at least one account."""
-    return _parse_whoami(_whoami_result())
+def is_signed_in() -> bool:
+    """Return True if `op` can read account data (i.e. integration is live)."""
+    return _parse_user_me(_user_me_result())
 
 
 def read(path: str) -> str:
@@ -77,25 +64,26 @@ def read(path: str) -> str:
     Returns the raw value with the trailing newline stripped (op always
     appends one). Raises `ShellError` on failure.
     """
-    result = sh.run([_op_binary(), "read", path], destructive=False)
+    result = sh.run(["op", "read", path], destructive=False)
     return result.stdout.rstrip("\n")
 
 
 def signin_wait(timeout_s: float = 180.0, poll_interval_s: float = 2.0) -> None:
-    """Poll `op whoami` until it succeeds, or raise after `timeout_s`.
+    """Poll until `op` can read account data, or raise after `timeout_s`.
 
-    Emits a progress line every ~10 seconds while waiting, including the
-    most recent stderr from `op whoami` so the user can see *what* is
-    failing (approval pending, GUI locked, no account, etc.) instead of
-    an opaque timeout.
+    Uses `op user get --me`, not `op whoami`, because the latter doesn't
+    engage desktop-app integration. Emits a progress line every ~10
+    seconds, including the most recent stderr from `op` so the user can
+    see *what* is failing (approval pending, GUI locked, not yet enabled
+    in Developer settings, etc.) instead of an opaque timeout.
     """
     start = time.monotonic()
     deadline = start + timeout_s
     attempts = 0
     last_stderr = ""
     while time.monotonic() < deadline:
-        result = _whoami_result()
-        if _parse_whoami(result):
+        result = _user_me_result()
+        if _parse_user_me(result):
             _log.info("1Password CLI signed in")
             return
         stripped = result.stderr.strip()
