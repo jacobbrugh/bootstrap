@@ -439,7 +439,7 @@ function New-SshKey {
     .PARAMETER SshDir
         Directory to store the key (default: ~/.ssh)
     .PARAMETER KeyName
-        Name of the key file (default: id_ed25519_<hostname>)
+        Name of the key file (default: id_ed25519)
     .PARAMETER Comment
         Comment/email for the key
     .PARAMETER DryRun
@@ -450,7 +450,7 @@ function New-SshKey {
     [CmdletBinding()]
     param(
         [string]$SshDir = (Join-Path $env:USERPROFILE '.ssh'),
-        [string]$KeyName = "id_ed25519_$(hostname)",
+        [string]$KeyName = "id_ed25519",
         [string]$Comment,
         [switch]$DryRun
     )

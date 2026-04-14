@@ -42,7 +42,7 @@ Phase order on Darwin:
 |---|---------------|-----------------------------------------------------------------------------|
 | 1 | `prereqs`     | Install Homebrew; create `~/.ssh`, `~/.config/sops/age`; resolve `/etc/{nix.conf,zshrc,bashrc}` conflicts. |
 | 2 | `onepassword` | Install 1Password GUI via cask, launch it, poll `op whoami` until signed in. |
-| 3 | `ssh`         | Generate `id_ed25519_<host>`; upload to GitHub via `gh ssh-key add`; pin github.com host keys; on Darwin, add to keychain via `ssh-add --apple-use-keychain` and write `~/.ssh/config` stanza. |
+| 3 | `ssh`         | Generate `~/.ssh/id_ed25519`; upload to GitHub via `gh ssh-key add`; pin github.com host keys; on Darwin, add to keychain via `/usr/bin/ssh-add --apple-use-keychain` and write `~/.ssh/config` stanza. |
 | 4 | `register`    | Clone the canonical dotfiles repo; prompt hostname + tags; generate post-quantum age key if missing; edit `registry.toml` + `.sops.yaml`; `sops updatekeys` + verify decrypt; commit + push; symlink `/etc/nix-darwin/flake.nix` to the canonical repo. |
 | 5 | `switch`      | Run `darwin-rebuild switch` (or `nixos-rebuild` / `home-manager switch`).   |
 | 6 | `post`        | Auto-open System Settings panes for the irreducibly manual TCC gates (Accessibility, Input Monitoring, System Extensions). |

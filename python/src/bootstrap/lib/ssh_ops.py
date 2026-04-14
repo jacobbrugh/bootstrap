@@ -35,9 +35,13 @@ def apple_keychain_add(key_path: Path, *, dry_run: bool = False) -> None:
     """Add an SSH key to the macOS keychain-backed ssh-agent.
 
     Darwin-only. The caller is OS-gated (only Darwin phases invoke this).
+    Uses `/usr/bin/ssh-add` explicitly — `--apple-use-keychain` is an
+    Apple-specific patch on macOS's OpenSSH and is not present in the
+    upstream ssh-add shipped by nixpkgs (which the bootstrap wrapper
+    otherwise puts first on PATH).
     """
     sh.run(
-        ["ssh-add", "--apple-use-keychain", str(key_path)],
+        ["/usr/bin/ssh-add", "--apple-use-keychain", str(key_path)],
         dry_run=dry_run,
         destructive=True,
     )

@@ -16,7 +16,7 @@ from importlib import resources
 
 from bootstrap.lib import gh, log, ssh_ops
 from bootstrap.lib.errors import PrereqMissing
-from bootstrap.lib.paths import SSH_KNOWN_HOSTS, ssh_key_path
+from bootstrap.lib.paths import SSH_KEY, SSH_KNOWN_HOSTS
 from bootstrap.lib.runtime import Context
 
 NAME = "ssh"
@@ -32,13 +32,12 @@ def run(ctx: Context) -> None:
             where="wrap in `secrets.ephemeral_secrets(ctx)`",
         )
 
-    key_path = ssh_key_path(ctx.hostname)
     comment = f"{ctx.hostname}-bootstrap"
-    ssh_ops.keygen(key_path, comment, dry_run=ctx.dry_run)
+    ssh_ops.keygen(SSH_KEY, comment, dry_run=ctx.dry_run)
 
     _pin_github_host_keys(dry_run=ctx.dry_run)
 
-    pubkey_path = key_path.with_suffix(".pub")
+    pubkey_path = SSH_KEY.with_suffix(".pub")
     today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
     title = f"bootstrap:{ctx.hostname}:{today}"
 

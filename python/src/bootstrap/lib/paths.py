@@ -38,13 +38,9 @@ SOPS_AGE_KEY_FILE: Path = SOPS_AGE_DIR / "keys.txt"
 SSH_DIR: Path = HOME / ".ssh"
 SSH_CONFIG: Path = SSH_DIR / "config"
 SSH_KNOWN_HOSTS: Path = SSH_DIR / "known_hosts"
+SSH_KEY: Path = SSH_DIR / "id_ed25519"
 
 # ── Default flake symlink targets per-platform ──────────────────────────
 DARWIN_FLAKE_SYMLINK: Path = Path("/etc/nix-darwin/flake.nix")
 NIXOS_FLAKE_SYMLINK: Path = Path("/etc/nixos/flake.nix")
 HM_FLAKE_SYMLINK: Path = XDG_CONFIG_HOME / "home-manager" / "flake.nix"
-
-
-def ssh_key_path(hostname: str) -> Path:
-    """Private ed25519 key file for a given host."""
-    return SSH_DIR / f"id_ed25519_{hostname}"
