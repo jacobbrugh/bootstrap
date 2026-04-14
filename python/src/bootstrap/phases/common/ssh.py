@@ -44,20 +44,17 @@ def run(ctx: Context) -> None:
     # The `gh api /user/keys` idempotency check is `destructive=False` so it
     # runs even in dry-run — but with the dry-run fake token from
     # `ephemeral_secrets`, it would fail 401 Unauthorized. Short-circuit the
-    # whole GitHub interaction here. `gh.ssh_key_titles`'s destructive marker
-    # stays False because real runs SHOULD hit the API for the idempotency
-    # check; only the dry-run-with-fake-token combination is broken.
+    # whole GitHub interaction here.
     if ctx.dry_run:
         _log.info(
-            "[dry-run] would check GitHub for SSH key titled %s and upload %s if missing",
-            title,
+            "[dry-run] would check GitHub for %s and upload with title %s if missing",
             pubkey_path,
+            title,
         )
         return
 
-    existing_titles = gh.ssh_key_titles(ctx.github_token)
-    if title in existing_titles:
-        _log.info("GitHub already has SSH key with title %s — skipping upload", title)
+    if gh.ssh_key_registered(ctx.github_token, pubkey_path):
+        _log.info("GitHub already has this public key — skipping upload")
     else:
         gh.ssh_key_add(ctx.github_token, pubkey_path, title, dry_run=ctx.dry_run)
 

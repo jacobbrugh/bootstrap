@@ -22,18 +22,52 @@ def _env_with_token(token: str) -> dict[str, str]:
     return env
 
 
-def ssh_key_titles(token: str) -> list[str]:
-    """Return the titles of the authenticated user's SSH keys.
+def ssh_key_registered(token: str, pubkey_path: Path) -> bool:
+    """Return True iff the public key at `pubkey_path` is already registered.
 
-    Uses `gh api /user/keys --jq '.[].title'` so we get structured output
-    without parsing `gh ssh-key list`'s tab-separated format.
+    Checks by **content**, not by title. The previous implementation matched
+    on the `bootstrap:<host>:<YYYY-MM-DD>` title, which caused an insidious
+    bug: if a re-run regenerates `~/.ssh/id_ed25519` (e.g. after a path-
+    convention change), the old GitHub title is still there pointing at the
+    *old* pubkey, so we'd skip the upload and silently leave a mismatch —
+    local SSH auth then fails with `Permission denied (publickey)` the next
+    time anything touches git over ssh.
+
+    GitHub's API returns each key as `<algo> <base64>` (no comment). We
+    match on those two leading fields from the local file, so an
+    algo+base64 hit is considered "already registered" regardless of the
+    stored title or the comment stripped by GitHub.
     """
+    local_head = _pubkey_head(pubkey_path)
+    if local_head is None:
+        return False
     result = sh.run(
-        ["gh", "api", "/user/keys", "--jq", ".[].title"],
+        ["gh", "api", "/user/keys", "--jq", ".[].key"],
         env=_env_with_token(token),
         destructive=False,
     )
-    return [line for line in result.stdout.splitlines() if line.strip()]
+    for line in result.stdout.splitlines():
+        remote = line.strip()
+        if not remote:
+            continue
+        remote_parts = remote.split(maxsplit=2)
+        if len(remote_parts) < 2:
+            continue
+        if " ".join(remote_parts[:2]) == local_head:
+            return True
+    return False
+
+
+def _pubkey_head(pubkey_path: Path) -> str | None:
+    """Return `<algo> <base64>` from a public-key file, or None if unparsable."""
+    try:
+        content = pubkey_path.read_text()
+    except OSError:
+        return None
+    parts = content.strip().split(maxsplit=2)
+    if len(parts) < 2:
+        return None
+    return " ".join(parts[:2])
 
 
 def ssh_key_add(

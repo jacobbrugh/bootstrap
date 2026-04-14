@@ -101,9 +101,14 @@ def run(ctx: Context) -> None:
         return
 
     # 2. Hostname prompt ---------------------------------------------------
+    # `scutil --get LocalHostName` on macOS returns the user-friendly name
+    # like "Jacobs-Mac-mini", but our registry requires `[a-z][a-z0-9-]*`
+    # (DNS-safe lowercase). Lowercase the default so accepting it Just
+    # Works. If the user types a mixed-case name, validate_hostname raises
+    # a clear error — that's fine.
     chosen = prompts.text(
         "hostname for this machine:",
-        default=ctx.hostname,
+        default=ctx.hostname.lower(),
         non_interactive=ctx.non_interactive,
     )
     host_info.validate_hostname(chosen)

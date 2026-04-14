@@ -45,7 +45,13 @@ _log "Running bootstrap flake: $BOOTSTRAP_FLAKE"
 # returning a cached eval (default TTL: 1 hour). Without it, fixes
 # pushed in the last hour wouldn't reach a user re-running this wrapper
 # — which is exactly the recovery path after a mid-bootstrap failure.
+#
+# `< /dev/tty` reattaches stdin to the controlling terminal. The canonical
+# invocation pipes this script through `curl … | zsh`, so by the time the
+# bootstrap would prompt for a hostname / tags, fd 0 is an EOF'd pipe.
+# This is the only layer where the pipe is visible — the Python downstream
+# shouldn't have to know anything about it.
 exec nix run \
   --refresh \
   --extra-experimental-features "nix-command flakes" \
-  "$BOOTSTRAP_FLAKE" -- "$@"
+  "$BOOTSTRAP_FLAKE" -- "$@" </dev/tty
