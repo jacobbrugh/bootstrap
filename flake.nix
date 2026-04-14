@@ -56,7 +56,6 @@
           dependencies = with pkgs.python3.pkgs; [
             typer
             rich
-            questionary
             tomlkit
             ruamel-yaml
           ];
@@ -188,16 +187,15 @@
         system: pkgs:
         let
           # Wrap mypy in a python env that includes the runtime deps so strict
-          # analysis sees real types for questionary/ruamel/tomlkit/rich instead
-          # of falling back to Any. The `entry` line below uses `${mypyEnv}/bin/mypy`
-          # so the hook runs the wrapped binary directly — git-hooks.nix doesn't
+          # analysis sees real types for ruamel/tomlkit/rich instead of falling
+          # back to Any. The `entry` line below uses `${mypyEnv}/bin/mypy` so the
+          # hook runs the wrapped binary directly — git-hooks.nix doesn't
           # automatically prefix overridden entries with the package's bin dir.
           mypyEnv = pkgs.python3.withPackages (
             ps: with ps; [
               mypy
               typer
               rich
-              questionary
               tomlkit
               ruamel-yaml
             ]
