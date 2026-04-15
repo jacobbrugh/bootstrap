@@ -7,13 +7,24 @@ and lets the `secrets.ephemeral_secrets` context manager own the token lifecycle
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from bootstrap.lib import sh
+from bootstrap.lib.errors import BootstrapError
 
 _log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class GitIdentity:
+    """Git author/committer identity, derived from the authenticated GitHub user."""
+
+    name: str
+    email: str
 
 
 def _env_with_token(token: str) -> dict[str, str]:
@@ -99,3 +110,46 @@ async def ssh_key_add(
         dry_run=dry_run,
         destructive=True,
     )
+
+
+async def get_git_identity(token: str) -> GitIdentity:
+    """Return the authenticated user's git author/committer identity.
+
+    Fetches `gh api user` and derives `(name, email)` with safe fallbacks:
+    - `name` defaults to `login` if the user hasn't set a display name
+    - `email` defaults to GitHub's `<id>+<login>@users.noreply.github.com`
+      format if the profile email is null (which it is when the user has
+      the "Keep my email address private" setting enabled).
+
+    The bootstrap uses this to set `GIT_{AUTHOR,COMMITTER}_{NAME,EMAIL}`
+    on the register-phase commit, since fresh machines don't yet have
+    `git config --global user.name/email` set.
+    """
+    result = await sh.run(
+        ["gh", "api", "user"],
+        env=_env_with_token(token),
+        destructive=False,
+    )
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise BootstrapError(f"gh api user returned non-JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise BootstrapError(f"gh api user returned {type(data).__name__}, expected object")
+
+    login = data.get("login")
+    user_id = data.get("id")
+    if not isinstance(login, str) or not isinstance(user_id, int):
+        raise BootstrapError(f"gh api user response missing login/id: {data!r}")
+
+    raw_name = data.get("name")
+    name = raw_name if isinstance(raw_name, str) and raw_name else login
+
+    raw_email = data.get("email")
+    email = (
+        raw_email
+        if isinstance(raw_email, str) and raw_email
+        else f"{user_id}+{login}@users.noreply.github.com"
+    )
+
+    return GitIdentity(name=name, email=email)

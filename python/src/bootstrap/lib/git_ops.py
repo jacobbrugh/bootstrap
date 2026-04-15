@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 
 from bootstrap.lib import sh
@@ -87,6 +87,7 @@ async def commit(
     message: str,
     *,
     dry_run: bool = False,
+    env: Mapping[str, str] | None = None,
 ) -> None:
     """Stage the given paths and create a commit.
 
@@ -94,6 +95,11 @@ async def commit(
     That's also the reason we don't need a separate "scope check" pass
     before committing: by construction, only the listed paths can enter
     the commit.
+
+    `env`, if provided, is forwarded to the `git commit` invocation. The
+    register phase passes `GIT_{AUTHOR,COMMITTER}_{NAME,EMAIL}` here
+    because a fresh bootstrap machine doesn't have `git config --global
+    user.name/email` set yet.
     """
     await sh.run(
         ["git", "-C", str(repo), "add", "--", *(str(p) for p in paths)],
@@ -102,6 +108,7 @@ async def commit(
     )
     await sh.run(
         ["git", "-C", str(repo), "commit", "-m", message],
+        env=env,
         dry_run=dry_run,
         destructive=True,
     )

@@ -35,11 +35,13 @@ Flow:
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterable
 from pathlib import Path
 
 from bootstrap.lib import (
     age_ops,
+    gh,
     git_ops,
     host_info,
     prompts,
@@ -168,6 +170,24 @@ async def run(ctx: Context) -> None:
 
         pubkey = await _ensure_age_key(ctx)
 
+        # Build a git identity env for the commit. Fresh bootstrap machines
+        # don't have `git config --global user.name/email` set yet, so we
+        # derive it from the authenticated GitHub user (whose token we
+        # already have in ctx from ephemeral_secrets) and pass it via
+        # GIT_{AUTHOR,COMMITTER}_{NAME,EMAIL}. In dry-run, ctx.github_token
+        # is None, the commit is a "would run" log, and env is irrelevant.
+        commit_env: dict[str, str] | None = None
+        if not ctx.dry_run:
+            assert ctx.github_token is not None
+            identity = await gh.get_git_identity(ctx.github_token)
+            commit_env = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": identity.name,
+                "GIT_AUTHOR_EMAIL": identity.email,
+                "GIT_COMMITTER_NAME": identity.name,
+                "GIT_COMMITTER_EMAIL": identity.email,
+            }
+
         # Wrap destructive edits in a transactional context: on any exception
         # before we successfully push, git reset --hard to the HEAD we had on
         # entry. Covers dirty working tree AND local-but-unpushed commits.
@@ -236,6 +256,7 @@ async def run(ctx: Context) -> None:
                 [_REGISTRY_REL, *touched_sops],
                 commit_msg,
                 dry_run=ctx.dry_run,
+                env=commit_env,
             )
             await git_ops.push(ctx.canonical_repo, dry_run=ctx.dry_run)
     finally:
