@@ -12,7 +12,6 @@ import stat
 from pathlib import Path
 
 from bootstrap.lib import sh
-from bootstrap.lib.errors import BootstrapError
 
 _log = logging.getLogger(__name__)
 
@@ -20,22 +19,11 @@ _log = logging.getLogger(__name__)
 async def generate_keypair(key_file: Path, *, dry_run: bool = False) -> str:
     """Generate a post-quantum age keypair at `key_file`.
 
-    Returns the public key. Parent directory is created with mode 0700 and
-    the file with mode 0600.
-
-    Refuses to overwrite `key_file` if it already exists — private keys are
-    sacred. The bootstrap never overwrites or deletes one. Callers that
-    need the pubkey from an existing file should call `extract_public_key`
-    directly instead. Don't be a fucking idiot like me.
+    Returns the public key. The parent directory is created with mode 0700
+    and the file with mode 0600. Callers must ensure `key_file` doesn't
+    already exist — use `extract_public_key` to read the pubkey from an
+    existing file instead of calling this.
     """
-    if not dry_run and key_file.exists():
-        raise BootstrapError(
-            f"refusing to overwrite existing age key at {key_file}. "
-            f"The bootstrap never destroys private keys. If you really "
-            f"want a fresh key here, move the existing file aside "
-            f"manually first."
-        )
-
     key_file.parent.mkdir(parents=True, exist_ok=True)
     key_file.parent.chmod(stat.S_IRWXU)
 
