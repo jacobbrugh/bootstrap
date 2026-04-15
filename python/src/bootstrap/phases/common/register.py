@@ -8,27 +8,35 @@ key built from that name.
 Flow:
 
 1. Ensure the canonical dotfiles checkout exists, is clean, and up-to-date.
-2. Load `registry.toml` and `.sops.yaml`, branch on
-   `(host_in_registry, local_age_key_exists, anchor_matches_pubkey)`:
-     Case A: host NOT in registry → REGISTER NEW HOST sub-flow.
-     Case B: host in registry, local key exists & matches an anchor by
-             pubkey content → skip to symlink step.
-     Case C: host in registry, local key MISSING → prompt to regenerate,
-             then REPLACE EXISTING HOST KEY sub-flow.
-     Case D: host in registry, local key exists but doesn't match any
-             anchor → hard fail with manual-recovery instructions.
-3. Register / re-register: generate or extract the host's age key,
-   add it to `registry.toml` and `.sops.yaml`, `sops updatekeys` every
-   affected secret file, verify the new host can decrypt, commit, push.
-   The destructive block (file saves → updatekeys → commit → push) is
+2. Load `registry.toml` and `.sops.yaml`, decide based on
+   `(host_in_registry, local_age_key_exists, pubkey_in_sops_yaml)`:
+     - host in registry + local key matches an existing anchor by pubkey
+       content → FULLY REGISTERED, early return to the symlink step.
+     - host in registry + local key MISSING → prompt to regenerate;
+       strip the stale anchor if present (no-op if legacy name doesn't
+       match convention); fall through to the registration body.
+     - host in registry + local key exists but pubkey NOT in .sops.yaml
+       → log and fall through; the body adds the anchor + creation_rule
+       entries under the default `host_<hostname>` name.
+     - host NOT in registry (any key state) → fall through to the
+       registration body, which prompts for tags, extracts or generates
+       the age key, adds the registry entry, declares the anchor (if
+       needed), and wires up creation_rules.
+3. Register / re-register: extract (or generate) the host's age key,
+   declare the anchor in `.sops.yaml` only if the pubkey isn't already
+   there under some name, add alias references in creation_rules
+   (idempotent), `sops updatekeys` every affected secret file, verify
+   the new host can decrypt, commit, push. The destructive block is
    wrapped in `git_ops.transactional_edit` so any exception does
    `git reset --hard` back to the HEAD we saw on entry, rolling back
-   both uncommitted edits and local-but-unpushed commits.
+   both uncommitted edits and local-but-unpushed commits. Tags are
+   re-used from `registry.toml` when the host is already present, so
+   re-runs don't re-prompt.
 4. Install the OS-specific default flake-path symlink. This runs in a
    `try/finally` covering the whole phase, so it fires on normal exit,
-   early return (dry-run short-circuit, Case B skip), or any exception
-   from the body — ensuring `darwin-rebuild` / `nixos-rebuild` /
-   `home-manager` can resolve the flake even if a mid-phase crash
+   early return (dry-run short-circuit, fully-registered skip), or any
+   exception from the body — ensuring `darwin-rebuild` / `nixos-rebuild`
+   / `home-manager` can resolve the flake even if a mid-phase crash
    left the registration incomplete.
 """
 
@@ -52,7 +60,6 @@ from bootstrap.lib import (
 )
 from bootstrap.lib.errors import (
     BootstrapError,
-    DecisionTreeError,
     UserAbort,
 )
 from bootstrap.lib.paths import (
@@ -139,10 +146,16 @@ async def run(ctx: Context) -> None:
                     existing_anchor,
                 )
                 return
-            raise DecisionTreeError(
-                f"local age key at {SOPS_AGE_KEY_FILE} does not match any anchor "
-                f"in .sops.yaml. Either restore the correct key file, or delete "
-                f"this key file and re-run to generate + register a fresh one."
+            # Keyfile exists but its pubkey isn't anchored in .sops.yaml.
+            # This happens if the host was added to registry.toml but the
+            # .sops.yaml anchor step was skipped / reverted, or if the
+            # user restored a key file from backup that predates the
+            # current .sops.yaml. Fall through to the registration body
+            # — it'll declare the anchor and wire up creation_rules.
+            _log.info(
+                "keyfile at %s isn't anchored in .sops.yaml — will add its pubkey under host_%s",
+                SOPS_AGE_KEY_FILE,
+                hostname,
             )
 
         if host_in_registry and not local_key_present:
@@ -158,10 +171,36 @@ async def run(ctx: Context) -> None:
             # add_age_key call further down will then re-declare the anchor
             # (same name, new pubkey) and add_to_creation_rule reinstates
             # the alias references.
-            sops_yaml.remove_age_key(sops_doc, anchor_name)
+            #
+            # Defensive: if the old anchor followed a legacy ad-hoc name
+            # (pc_jacobmac, server_nixN, etc.) instead of host_<hostname>,
+            # the remove is a no-op. We can't recover the old name without
+            # the old key, so the legacy anchor lingers in .sops.yaml as
+            # an orphan recipient — harmless, since its private key is
+            # gone, but worth cleaning up manually later.
+            try:
+                sops_yaml.remove_age_key(sops_doc, anchor_name)
+            except BootstrapError as exc:
+                _log.warning(
+                    "no stale anchor named %s to remove (%s) — proceeding",
+                    anchor_name,
+                    exc,
+                )
 
         # 3. Register / re-register ----------------------------------------
-        tags = await _select_tags(ctx)
+        # Tags: re-use the existing list from registry.toml on re-runs
+        # where the host is already there. Only prompt for brand-new
+        # registrations — avoids spuriously re-asking the user on every
+        # idempotent re-run.
+        if host_in_registry:
+            tags = registry_toml.get_tags(registry, hostname)
+            _log.info(
+                "host %s already in registry.toml — reusing tags %s",
+                hostname,
+                tags or "(none)",
+            )
+        else:
+            tags = await _select_tags(ctx)
         system = host_info.system_string()
 
         touched_sops: list[Path] = [_SOPS_YAML_REL, _BOT_SECRETS_REL]
@@ -169,6 +208,22 @@ async def run(ctx: Context) -> None:
             touched_sops.append(_SECRETS_REL)
 
         pubkey = await _ensure_age_key(ctx)
+
+        # If the pubkey is already declared in .sops.yaml under some anchor
+        # — legacy ad-hoc name (pc_jacobmac, server_nixN), or leftover from
+        # a prior partial run — reuse that anchor instead of trying to
+        # declare a new one with the same key value. Case B already
+        # short-circuited when BOTH the host was in registry AND the
+        # anchor was found; reaching here means one of those was false,
+        # so there's still registry + creation_rule + commit work to do,
+        # but the anchor declaration itself is a no-op.
+        existing_anchor_for_pubkey = sops_yaml.find_anchor_by_pubkey(sops_doc, pubkey)
+        if existing_anchor_for_pubkey is not None:
+            anchor_name = existing_anchor_for_pubkey
+            _log.info(
+                "pubkey already declared in .sops.yaml under anchor %s — reusing",
+                anchor_name,
+            )
 
         # Build a git identity env for the commit. Fresh bootstrap machines
         # don't have `git config --global user.name/email` set yet, so we
@@ -207,7 +262,12 @@ async def run(ctx: Context) -> None:
                 registry_toml.add_host(registry, hostname, system=system, tags=tags)
                 _log.info("added %s to registry.toml", hostname)
 
-            sops_yaml.add_age_key(sops_doc, anchor_name, pubkey)
+            # Gated: `add_age_key` raises if the anchor already exists.
+            # We already resolved `existing_anchor_for_pubkey` above — if
+            # non-None, the anchor is already in place and we skip here.
+            # `add_to_creation_rule` is idempotent regardless.
+            if existing_anchor_for_pubkey is None:
+                sops_yaml.add_age_key(sops_doc, anchor_name, pubkey)
             sops_yaml.add_to_creation_rule(
                 sops_doc,
                 _BOT_SECRETS_REL.as_posix() + "$",

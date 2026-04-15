@@ -32,6 +32,22 @@ def has_host(doc: TOMLDocument, hostname: str) -> bool:
     return hostname in doc
 
 
+def get_tags(doc: TOMLDocument, hostname: str) -> list[str]:
+    """Return the tags list for `hostname`, or `[]` if host/`tags` is missing.
+
+    Used by the register phase to reuse existing tags on re-registration
+    rather than re-prompting the user when the host is already in
+    `registry.toml`.
+    """
+    table = doc.get(hostname)
+    if table is None:
+        return []
+    tags = table.get("tags")
+    if tags is None:
+        return []
+    return [str(t) for t in tags]
+
+
 def add_host(
     doc: TOMLDocument,
     hostname: str,
