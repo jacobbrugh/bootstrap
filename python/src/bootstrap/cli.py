@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from typing import Annotated
 
@@ -101,7 +102,12 @@ def _run_phase(
     if platform is Platform.UNSUPPORTED:
         raise BootstrapError(f"unsupported platform: {sys.platform}")
     detected_hostname = host_info.detect_hostname()
-    default_hostname = host_info.sanitize_hostname_default(detected_hostname)
+    # BOOTSTRAP_HOSTNAME overrides the prompt default. Used by
+    # `scripts/test-register-local.sh` to drive `--non-interactive`
+    # runs against a fake hostname without touching the real machine.
+    default_hostname = os.environ.get("BOOTSTRAP_HOSTNAME") or (
+        host_info.sanitize_hostname_default(detected_hostname)
+    )
 
     async def _go() -> None:
         # Prompt for hostname at CLI entry so ssh.py builds its key
@@ -119,7 +125,7 @@ def _run_phase(
             non_interactive=non_interactive,
         )
         host_info.validate_hostname(chosen)
-        if platform is Platform.DARWIN:
+        if platform is Platform.DARWIN and not os.environ.get("BOOTSTRAP_SKIP_RENAME"):
             # Always call rename_darwin on Darwin, even when chosen matches
             # detected_hostname. `detect_hostname` reads LocalHostName, but
             # macOS setup assistant also has ComputerName (where the human
@@ -129,6 +135,11 @@ def _run_phase(
             # characters macOS seeded them with. `scutil --set X <same>` is
             # an idempotent write, so this is free when the values already
             # match.
+            #
+            # BOOTSTRAP_SKIP_RENAME is a test-only escape hatch: the local
+            # test harness runs `bootstrap register` against a throwaway
+            # dotfiles checkout with a fake hostname, and we don't want the
+            # test to actually rename the developer's Mac.
             _log.info("setting machine hostname to %s", chosen)
             await sh.prime_sudo(dry_run=dry_run)
             await host_info.rename_darwin(chosen, dry_run=dry_run)

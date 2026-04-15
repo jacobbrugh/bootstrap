@@ -176,10 +176,19 @@ async def run(ctx: Context) -> None:
         # already have in ctx from ephemeral_secrets) and pass it via
         # GIT_{AUTHOR,COMMITTER}_{NAME,EMAIL}. In dry-run, ctx.github_token
         # is None, the commit is a "would run" log, and env is irrelevant.
+        #
+        # BOOTSTRAP_TEST_GIT_AUTHOR_{NAME,EMAIL} env vars bypass the
+        # `gh api user` call — used by the test-register CI job which
+        # doesn't have a real GitHub token to call the API with.
         commit_env: dict[str, str] | None = None
         if not ctx.dry_run:
-            assert ctx.github_token is not None
-            identity = await gh.get_git_identity(ctx.github_token)
+            test_name = os.environ.get("BOOTSTRAP_TEST_GIT_AUTHOR_NAME")
+            test_email = os.environ.get("BOOTSTRAP_TEST_GIT_AUTHOR_EMAIL")
+            if test_name and test_email:
+                identity = gh.GitIdentity(name=test_name, email=test_email)
+            else:
+                assert ctx.github_token is not None
+                identity = await gh.get_git_identity(ctx.github_token)
             commit_env = {
                 **os.environ,
                 "GIT_AUTHOR_NAME": identity.name,

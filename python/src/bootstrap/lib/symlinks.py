@@ -32,7 +32,17 @@ _log = logging.getLogger(__name__)
 
 
 def _flake_path_for(platform: Platform) -> Path | None:
-    """Return the default flake-path for `platform`, or None if unsupported."""
+    """Return the default flake-path for `platform`, or None if unsupported.
+
+    Honors `BOOTSTRAP_FLAKE_SYMLINK_PATH` if set, regardless of platform,
+    so the CI test can point the register phase's `_ensure_symlink` at
+    a throwaway path instead of clobbering the real `/etc/nix-darwin/
+    flake.nix` / `/etc/nixos/flake.nix` / `~/.config/home-manager/flake.nix`
+    on the developer's machine.
+    """
+    override = os.environ.get("BOOTSTRAP_FLAKE_SYMLINK_PATH")
+    if override:
+        return Path(override)
     if platform is Platform.DARWIN:
         return DARWIN_FLAKE_SYMLINK
     if platform in (Platform.NIXOS, Platform.NIXOS_WSL):

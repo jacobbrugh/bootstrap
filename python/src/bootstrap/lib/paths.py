@@ -16,11 +16,23 @@ HOME: Path = Path.home()
 # ── Canonical dotfiles checkout ─────────────────────────────────────────
 # Symlinks at /etc/nix-darwin/flake.nix, /etc/nixos/flake.nix, and
 # $XDG_CONFIG_HOME/home-manager/flake.nix all resolve to this directory.
-CANONICAL_DOTFILES: Path = HOME / "repos" / "jacobbrugh" / "nix-config" / "nix-config"
+#
+# Both the path and the git remote can be overridden via env vars, which
+# is how `scripts/test-register-local.sh` points the bootstrap at a
+# throwaway checkout + local bare repo so the register phase can be
+# end-to-end tested (commit + push) without touching real dotfiles state
+# on github:jacobpbrugh/dotfiles.
+CANONICAL_DOTFILES: Path = Path(
+    os.environ.get(
+        "BOOTSTRAP_CANONICAL_DOTFILES",
+        str(HOME / "repos" / "jacobbrugh" / "nix-config" / "nix-config"),
+    )
+)
 
-# Remote to clone from. Renaming the repo to `nix-config` happens separately
-# from bootstrap work — this stays `dotfiles` until the user renames it.
-DOTFILES_GIT_REMOTE: str = "git@github.com:jacobpbrugh/dotfiles.git"
+DOTFILES_GIT_REMOTE: str = os.environ.get(
+    "BOOTSTRAP_DOTFILES_REMOTE",
+    "git@github.com:jacobpbrugh/dotfiles.git",
+)
 
 # ── XDG base directories ────────────────────────────────────────────────
 XDG_CONFIG_HOME: Path = Path(os.environ.get("XDG_CONFIG_HOME", str(HOME / ".config")))

@@ -116,6 +116,28 @@ async def ephemeral_secrets(ctx: Context) -> AsyncIterator[None]:
         yield
         return
 
+    # Test bypass: if both BOOTSTRAP_TEST_AGE_KEY_FILE and
+    # BOOTSTRAP_TEST_GITHUB_TOKEN are set, skip 1Password + sops decrypt
+    # entirely and populate ctx from the injected values. Used by
+    # scripts/ci-test-register.sh and the test-register GHA job to
+    # exercise the register phase end-to-end without a real 1Password
+    # session. Normal (prod) bootstraps never set these.
+    test_age_key = os.environ.get("BOOTSTRAP_TEST_AGE_KEY_FILE")
+    test_github_token = os.environ.get("BOOTSTRAP_TEST_GITHUB_TOKEN")
+    if test_age_key and test_github_token:
+        _log.info(
+            "using BOOTSTRAP_TEST_* env vars instead of 1Password (age_key_file=%s)",
+            test_age_key,
+        )
+        ctx.bootstrap_age_key_file = Path(test_age_key)
+        ctx.github_token = test_github_token
+        try:
+            yield
+        finally:
+            ctx.bootstrap_age_key_file = None
+            ctx.github_token = None
+        return
+
     _log.info("materializing bootstrap secret zero from 1Password")
     runtime = _runtime_dir()
     runtime.mkdir(parents=True, exist_ok=True)

@@ -30,3 +30,33 @@ jobs:
 
       - name: Flake check (mypy --strict + pytest + ruff + nixfmt)
         run: nix flake check
+
+  test-register:
+    # End-to-end test for the register phase. Stands up a throwaway
+    # dotfiles fixture (age key + sops-encrypted secret files + minimal
+    # registry/tags/.sops.yaml + local bare-repo origin) and runs
+    # `bootstrap register --non-interactive` against it via
+    # BOOTSTRAP_* env overrides. Exercises: clone_or_pull, decision
+    # tree, _select_tags, _ensure_age_key, registry_toml/sops_yaml
+    # edits, sops updatekeys, sops verify_decrypt, git_ops.commit +
+    # push (with GIT_{AUTHOR,COMMITTER}_* from env), _ensure_symlink.
+    #
+    # Catches regressions in register.py / git_ops.py / sops_ops.py /
+    # secrets.py / the gh identity lookup — the kind that used to only
+    # show up on mac2 when the user actually ran the bootstrap.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            allow-unfree = true
+
+      - name: Build the bootstrap package
+        run: nix build .#default
+
+      - name: Run register end-to-end test
+        run: nix shell nixpkgs#git nixpkgs#age nixpkgs#sops -c bash scripts/ci-test-register.sh
