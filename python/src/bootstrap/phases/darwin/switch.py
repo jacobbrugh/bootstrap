@@ -30,6 +30,11 @@ NAME = "switch"
 
 _log = logging.getLogger(__name__)
 
+# sudo env_reset strips GIT_SSH_COMMAND before nix sees it, so we prepend
+# /usr/bin/env to set it after sudo's env scrub. accept-new = auto-accept
+# first-time host keys (TOFU), still rejects if a known key changes.
+_ENV_PREFIX = ["/usr/bin/env", "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new"]
+
 
 async def run(ctx: Context) -> None:
     # Re-prime sudo before the switch. The sudo cache from the initial
@@ -43,7 +48,7 @@ async def run(ctx: Context) -> None:
     if darwin_rebuild is not None:
         _log.info("running `sudo darwin-rebuild switch`")
         await sh.sudo_run(
-            [darwin_rebuild, "switch"],
+            [*_ENV_PREFIX, darwin_rebuild, "switch"],
             capture=False,
             dry_run=ctx.dry_run,
             destructive=True,
@@ -59,6 +64,7 @@ async def run(ctx: Context) -> None:
     _log.info("bootstrapping nix-darwin for the first time via `sudo nix run`")
     await sh.sudo_run(
         [
+            *_ENV_PREFIX,
             nix_path,
             "run",
             "--extra-experimental-features",
