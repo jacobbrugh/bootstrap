@@ -40,20 +40,42 @@ FAKE_SYMLINK="$TEST_ROOT/fake-flake-symlink"
 echo "[ci-test-register] test root: $TEST_ROOT"
 echo "[ci-test-register] fake hostname: $FAKE_HOSTNAME"
 
-# --- Generate throwaway age key ---------------------------------------
-# Used both as the "bootstrap" key (BOOTSTRAP_TEST_AGE_KEY_FILE)
-# AND as the host's own key (~/.config/sops/age/keys.txt) so the
-# register phase's `_ensure_age_key` finds an existing file and the
-# resulting sops recipient list just has duplicate entries pointing at
-# the same pubkey — harmless, and avoids needing two separate keys.
+# --- Pre-flight safety check ------------------------------------------
+# This test writes a fresh age key to $HOME/.config/sops/age/keys.txt.
+# In CI that's a throwaway path, but if someone runs this locally by
+# mistake it would destroy the real host's sops decryption key. Refuse
+# to run if the destination already exists — the cost of a clear error
+# is nothing compared to the cost of losing a private key.
+HOST_AGE_KEY_DEST="$HOME/.config/sops/age/keys.txt"
+if [[ -e "$HOST_AGE_KEY_DEST" ]]; then
+    echo "[ci-test-register] REFUSING to run: $HOST_AGE_KEY_DEST already exists." >&2
+    echo "[ci-test-register] This script writes a fresh key to that path." >&2
+    echo "[ci-test-register] Run it only in CI or a fully throwaway sandbox." >&2
+    exit 1
+fi
+
+# --- Generate throwaway age keys --------------------------------------
+# Two separate keys so the test exercises the real "new host" path:
+#   1. $AGE_KEY_FILE — the "bootstrap" key (BOOTSTRAP_TEST_AGE_KEY_FILE).
+#      This is the only recipient in the fixture's .sops.yaml, so sops
+#      can decrypt the fixture's bot-secrets / secrets files initially.
+#   2. $HOST_AGE_KEY_DEST — the host's own key, a FRESH keypair whose
+#      pubkey is NOT in the fixture's .sops.yaml. When the register
+#      phase runs, `_ensure_age_key` finds the existing file,
+#      `find_anchor_by_pubkey` returns None, and the phase falls
+#      through to the "declare new anchor" path — adding
+#      host_<FAKE_HOSTNAME> to .sops.yaml, which is what the final
+#      assertions check for.
 age-keygen -o "$AGE_KEY_FILE" 2>/dev/null
 chmod 600 "$AGE_KEY_FILE"
 PUBKEY=$(age-keygen -y "$AGE_KEY_FILE")
-echo "[ci-test-register] test age pubkey: ${PUBKEY:0:48}…"
+echo "[ci-test-register] bootstrap pubkey: ${PUBKEY:0:48}…"
 
-mkdir -p "$HOME/.config/sops/age"
-cp "$AGE_KEY_FILE" "$HOME/.config/sops/age/keys.txt"
-chmod 600 "$HOME/.config/sops/age/keys.txt"
+mkdir -p "$(dirname "$HOST_AGE_KEY_DEST")"
+age-keygen -o "$HOST_AGE_KEY_DEST" 2>/dev/null
+chmod 600 "$HOST_AGE_KEY_DEST"
+HOST_PUBKEY=$(age-keygen -y "$HOST_AGE_KEY_DEST")
+echo "[ci-test-register] host pubkey:      ${HOST_PUBKEY:0:48}…"
 
 # --- Build the fixture dotfiles ---------------------------------------
 mkdir -p "$CHECKOUT/nix/config/hosts" "$CHECKOUT/nix/config/tags"
