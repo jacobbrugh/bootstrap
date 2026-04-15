@@ -24,11 +24,6 @@ DOTFILES_GIT_REMOTE: str = "git@github.com:jacobpbrugh/dotfiles.git"
 
 # ── XDG base directories ────────────────────────────────────────────────
 XDG_CONFIG_HOME: Path = Path(os.environ.get("XDG_CONFIG_HOME", str(HOME / ".config")))
-XDG_STATE_HOME: Path = Path(os.environ.get("XDG_STATE_HOME", str(HOME / ".local" / "state")))
-
-# ── Bootstrap state ─────────────────────────────────────────────────────
-STATE_DIR: Path = XDG_STATE_HOME / "bootstrap"
-PHASE_STATE_DIR: Path = STATE_DIR / "phases"
 
 # ── sops / age ──────────────────────────────────────────────────────────
 SOPS_AGE_DIR: Path = XDG_CONFIG_HOME / "sops" / "age"

@@ -8,9 +8,16 @@ standalone-binary invocations share the same argument parsing.
 Typer callbacks are synchronous (Typer doesn't support async callbacks
 directly). Each callback wraps `asyncio.run(coroutine)` internally, so
 the entire orchestrator + phase graph runs inside one asyncio event loop
-per CLI invocation. `questionary.text(msg).ask_async()` and every
-subprocess call via `asyncio.create_subprocess_exec` cooperate with that
-single loop.
+per CLI invocation.
+
+The hostname prompt + Darwin rename happens at CLI entry, BEFORE any
+phase runs. The reason is that `ssh.py` builds the key comment and the
+GitHub key title from `ctx.hostname`, and `ssh` runs before `register`.
+If we deferred the prompt to register (as the original design did), the
+SSH key would always be uploaded with the pre-rename OS hostname
+(e.g. `jacobs-mac-mini-bootstrap`) even when the user renamed to
+`mac2`. Prompting at CLI entry + passing `chosen` into `Context.hostname`
+is the single place every downstream phase reads from.
 """
 
 from __future__ import annotations
@@ -23,11 +30,13 @@ from typing import Annotated
 import typer
 
 from bootstrap import orchestrator
-from bootstrap.lib import host_info, log
+from bootstrap.lib import host_info, log, prompts, sh
 from bootstrap.lib.errors import BootstrapError
 from bootstrap.lib.paths import CANONICAL_DOTFILES
 from bootstrap.lib.runtime import Context
 from bootstrap.platform import Platform, detect
+
+_log = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="bootstrap",
@@ -65,35 +74,12 @@ Verbose = Annotated[
 ]
 
 
-async def _build_context(
-    *,
-    dry_run: bool,
-    non_interactive: bool,
-    verbose: bool,
-) -> Context:
-    log.setup(verbose=verbose)
-    platform = detect()
-    if platform is Platform.UNSUPPORTED:
-        raise BootstrapError(f"unsupported platform: {sys.platform}")
-    hostname = await host_info.detect_hostname()
-    return Context(
-        platform=platform,
-        hostname=hostname,
-        canonical_repo=CANONICAL_DOTFILES,
-        dry_run=dry_run,
-        non_interactive=non_interactive,
-        verbose=verbose,
-        has_windows_host=(platform is Platform.NIXOS_WSL),
-    )
-
-
 def _fail_on_bootstrap_error(exc: BootstrapError) -> typer.Exit:
-    logging.getLogger(__name__).error("[bold red]bootstrap failed:[/] %s", exc)
+    _log.error("[bold red]bootstrap failed:[/] %s", exc)
     return typer.Exit(code=1)
 
 
 def _run_phase(
-    runner: asyncio.Future[None] | None,
     *,
     dry_run: bool,
     non_interactive: bool,
@@ -102,17 +88,59 @@ def _run_phase(
 ) -> None:
     """Drive one CLI entry point through asyncio.run, handling BootstrapError.
 
+    Logging setup + sync platform/hostname detection happens before the
+    event loop — the hostname lookup is a single blocking scutil call and
+    doesn't need asyncio to do it.
+
     `entry` is the orchestrator function name to call. We look it up via
     getattr rather than taking a callable so the caller doesn't need to
     annotate the awkward `Callable[[Context], Awaitable[None]]` type.
     """
-    del runner  # unused, only exists to keep the type checker calm below
+    log.setup(verbose=verbose)
+    platform = detect()
+    if platform is Platform.UNSUPPORTED:
+        raise BootstrapError(f"unsupported platform: {sys.platform}")
+    detected_hostname = host_info.detect_hostname()
+    default_hostname = host_info.sanitize_hostname_default(detected_hostname)
 
     async def _go() -> None:
-        ctx = await _build_context(
+        # Prompt for hostname at CLI entry so ssh.py builds its key
+        # comment / GitHub title from the final name, not the pre-rename
+        # scutil value. Register phase no longer prompts or renames.
+        #
+        # The rename has no rollback path: if a later phase fails, the
+        # Mac keeps the new hostname but its registration in the dotfiles
+        # repo may be incomplete. Recovery is to re-run the bootstrap —
+        # the rename below is unconditional on Darwin and idempotent, so
+        # a re-run with the same name is a no-op.
+        chosen = await prompts.text(
+            "hostname for this machine:",
+            default=default_hostname,
+            non_interactive=non_interactive,
+        )
+        host_info.validate_hostname(chosen)
+        if platform is Platform.DARWIN:
+            # Always call rename_darwin on Darwin, even when chosen matches
+            # detected_hostname. `detect_hostname` reads LocalHostName, but
+            # macOS setup assistant also has ComputerName (where the human
+            # form lives — "Jacob's MacBook") and HostName (DNS-level). If
+            # the user accepts the default, we still want to overwrite the
+            # other two from the user-typed form with whatever weird
+            # characters macOS seeded them with. `scutil --set X <same>` is
+            # an idempotent write, so this is free when the values already
+            # match.
+            _log.info("setting machine hostname to %s", chosen)
+            await sh.prime_sudo(dry_run=dry_run)
+            await host_info.rename_darwin(chosen, dry_run=dry_run)
+
+        ctx = Context(
+            platform=platform,
+            hostname=chosen,
+            canonical_repo=CANONICAL_DOTFILES,
             dry_run=dry_run,
             non_interactive=non_interactive,
             verbose=verbose,
+            has_windows_host=(platform is Platform.NIXOS_WSL),
         )
         coro = getattr(orchestrator, entry)
         await coro(ctx)
@@ -137,7 +165,6 @@ def _root(
     if typer_ctx.invoked_subcommand is not None:
         return
     _run_phase(
-        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,
@@ -156,7 +183,6 @@ def _cmd_prereqs(
 ) -> None:
     """Install OS prerequisites (Homebrew on Darwin; dirs elsewhere)."""
     _run_phase(
-        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,
@@ -172,7 +198,6 @@ def _cmd_onepassword(
 ) -> None:
     """Install 1Password (Darwin) and wait for sign-in."""
     _run_phase(
-        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,
@@ -188,7 +213,6 @@ def _cmd_ssh(
 ) -> None:
     """Generate SSH key, upload to GitHub, add to keychain (Darwin)."""
     _run_phase(
-        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,
@@ -204,7 +228,6 @@ def _cmd_register(
 ) -> None:
     """Clone dotfiles + register this host in registry.toml + .sops.yaml."""
     _run_phase(
-        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,
@@ -220,7 +243,6 @@ def _cmd_switch(
 ) -> None:
     """Run the OS-native switch (darwin-rebuild / nixos-rebuild / home-manager)."""
     _run_phase(
-        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,
@@ -236,7 +258,6 @@ def _cmd_post(
 ) -> None:
     """Auto-open System Settings panes for manual TCC gates (Darwin)."""
     _run_phase(
-        None,
         dry_run=dry_run,
         non_interactive=non_interactive,
         verbose=verbose,

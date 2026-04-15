@@ -1,18 +1,19 @@
-"""Async interactive prompts on top of questionary.
+"""Interactive prompts via questionary, run on a worker thread.
 
-`questionary` wraps `prompt_toolkit`, which is natively async. Both
-libraries have two APIs: a sync `.ask()` / `.prompt()` that is intended
-for "my whole program is sync and I just want a line of input", and an
-async `.ask_async()` / `.prompt_async()` that is intended for "my
-program is already running an asyncio event loop and I want to prompt
-from inside it." The sync API bridges by spinning up a throwaway
-asyncio event loop for each prompt; the async API cooperates with
-whatever loop the caller already has.
+Questionary exposes two APIs: sync `.ask()` and async `.ask_async()`.
+The async API runs prompt_toolkit on the current event loop. The sync
+API spins up a fresh event loop just for the prompt.
 
-The bootstrap's whole orchestrator + phase graph runs inside a single
-`asyncio.run(async_main())` call, so `ask_async()` is the correct
-integration path. Every prompt below is `async def` and awaits
-`questionary.<prompt>.ask_async()`.
+The bootstrap's orchestrator drives many `asyncio.create_subprocess_exec`
+calls on the main event loop before the first interactive prompt fires.
+Running the prompt on that same main loop via `ask_async()` is brittle:
+any edge case in my subprocess pipe handling accumulates on that loop
+and can break a later `add_reader` call that questionary needs.
+
+So instead the wrappers below call sync `.ask()` on a worker thread via
+`asyncio.to_thread`. The worker thread has no running event loop at
+entry, so questionary's `Application.run()` is free to create a fresh
+one for the duration of the prompt. Zero sharing with the main loop.
 
 Every prompt respects the caller's `non_interactive` flag: when True the
 wrapper returns `default` (or raises `UserAbort` if no usable default).
@@ -20,6 +21,7 @@ wrapper returns `default` (or raises `UserAbort` if no usable default).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 
 import questionary
@@ -38,7 +40,11 @@ async def text(
         if default:
             return default
         raise UserAbort(f"text prompt would block in non-interactive mode: {message}")
-    answer: object = await questionary.text(message, default=default).ask_async()
+
+    def _ask() -> object:
+        return questionary.text(message, default=default).ask()
+
+    answer: object = await asyncio.to_thread(_ask)
     if answer is None:
         raise UserAbort(f"user cancelled prompt: {message}")
     if not isinstance(answer, str):
@@ -55,7 +61,11 @@ async def confirm(
     """Yes/no confirmation."""
     if non_interactive:
         return default
-    answer: object = await questionary.confirm(message, default=default).ask_async()
+
+    def _ask() -> object:
+        return questionary.confirm(message, default=default).ask()
+
+    answer: object = await asyncio.to_thread(_ask)
     if answer is None:
         raise UserAbort(f"user cancelled prompt: {message}")
     if not isinstance(answer, bool):
@@ -74,7 +84,11 @@ async def checkbox(
     if non_interactive:
         return list(defaults)
     q_choices = [questionary.Choice(c, checked=c in defaults) for c in choices]
-    answer: object = await questionary.checkbox(message, choices=q_choices).ask_async()
+
+    def _ask() -> object:
+        return questionary.checkbox(message, choices=q_choices).ask()
+
+    answer: object = await asyncio.to_thread(_ask)
     if answer is None:
         raise UserAbort(f"user cancelled prompt: {message}")
     if not isinstance(answer, list):

@@ -126,10 +126,10 @@ async def sudo_run(
     """Run a command under sudo, using the primed credential cache.
 
     Tries `sudo -n` (non-interactive) first. If the credential cache has
-    been invalidated — notably, Homebrew's installer sets an EXIT trap
-    that runs `sudo -k`, wiping any cache populated by `prime_sudo()`
-    before the installer ran — re-prime once (prompting the user) and
-    retry. Any other sudo failure propagates unchanged.
+    been invalidated — typically because sudo's default `timestamp_timeout`
+    (5 minutes) lapsed during a long-running operation like Homebrew's
+    installer — re-prime once (prompting the user) and retry. Any other
+    sudo failure propagates unchanged.
     """
     sudo_cmd: tuple[str, ...] = ("sudo", "-n", *cmd)
 

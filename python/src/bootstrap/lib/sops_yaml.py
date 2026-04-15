@@ -103,6 +103,29 @@ def get_registered_pubkey(doc: CommentedMap, anchor_name: str) -> str | None:
     return str(scalar)
 
 
+def find_anchor_by_pubkey(doc: CommentedMap, pubkey: str) -> str | None:
+    """Return the anchor name whose declared value equals `pubkey`, else None.
+
+    Existing `.sops.yaml` files often use ad-hoc anchor names that don't
+    match the bootstrap's `host_<hostname>` convention — e.g. `pc_jacobmac`
+    for the primary Mac, `server_nixN` for NixOS servers, `server_wsl1`,
+    `server_lima1`, etc. When the bootstrap re-runs on one of those hosts
+    and finds an existing local age key, matching by content (the pubkey
+    string) lets us re-use the existing anchor instead of appending a
+    duplicate `host_<hostname>` anchor for the same key.
+    """
+    keys = doc.get("keys")
+    if not isinstance(keys, CommentedSeq):
+        return None
+    for item in keys:
+        if not isinstance(item, PlainScalarString):
+            continue
+        if str(item) != pubkey:
+            continue
+        return _anchor_name_of(item)
+    return None
+
+
 def add_age_key(
     doc: CommentedMap,
     anchor_name: str,

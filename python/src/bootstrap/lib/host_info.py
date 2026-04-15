@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import platform as stdlib_platform
 import re
+import subprocess
 import sys
 
 from bootstrap.lib import sh
@@ -14,12 +15,29 @@ from bootstrap.platform import Platform, detect
 _log = logging.getLogger(__name__)
 
 _HOSTNAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+_HOSTNAME_DROP_RE = re.compile(r"[^a-z0-9-]")
 
 
 def validate_hostname(name: str) -> None:
     """Raise `BootstrapError` if `name` isn't a DNS-safe hostname."""
     if not _HOSTNAME_RE.match(name):
         raise BootstrapError(f"invalid hostname {name!r}: must match [a-z][a-z0-9-]*")
+
+
+def sanitize_hostname_default(name: str) -> str:
+    """Normalize an OS-derived hostname into a DNS-safe bootstrap default.
+
+    macOS `scutil --get LocalHostName` can return names containing
+    apostrophes, spaces, or other characters that don't match the bootstrap's
+    hostname regex. Lowercasing alone isn't enough — those characters have
+    to be dropped too. Leading hyphens are stripped because the regex
+    requires a leading letter. If the result is empty (the OS name was
+    entirely junk), return "host" as a visible placeholder.
+    """
+    lowered = name.lower()
+    stripped = _HOSTNAME_DROP_RE.sub("", lowered)
+    trimmed = stripped.lstrip("-")
+    return trimmed or "host"
 
 
 def system_string() -> str:
@@ -46,17 +64,32 @@ def system_string() -> str:
     raise BootstrapError(f"unsupported sys.platform: {current!r}")
 
 
-async def detect_hostname() -> str:
+def detect_hostname() -> str:
     """Return the current machine's hostname.
+
+    Synchronous because the CLI entry point calls this BEFORE `asyncio.run`
+    starts the event loop — the whole point is that no asyncio subprocess
+    machinery has fired yet by the time `_go` is reached, so the very first
+    interactive prompt inside the event loop runs on a clean slate.
 
     Darwin: `scutil --get LocalHostName`. Linux / NixOS / WSL: `hostname -s`.
     """
     platform = detect()
     if platform is Platform.DARWIN:
-        result = await sh.run(["scutil", "--get", "LocalHostName"], destructive=False)
+        result = subprocess.run(
+            ["scutil", "--get", "LocalHostName"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         return result.stdout.strip()
     if platform in (Platform.NIXOS, Platform.NIXOS_WSL, Platform.LINUX_HM):
-        result = await sh.run(["hostname", "-s"], destructive=False)
+        result = subprocess.run(
+            ["hostname", "-s"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         return result.stdout.strip()
     raise BootstrapError(f"cannot detect hostname on platform {platform.value}")
 

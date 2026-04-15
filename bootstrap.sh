@@ -46,12 +46,15 @@ _log "Running bootstrap flake: $BOOTSTRAP_FLAKE"
 # pushed in the last hour wouldn't reach a user re-running this wrapper
 # — which is exactly the recovery path after a mid-bootstrap failure.
 #
-# `< /dev/tty` reattaches stdin to the controlling terminal. The canonical
-# invocation pipes this script through `curl … | zsh`, so by the time the
-# bootstrap would prompt for a hostname / tags, fd 0 is an EOF'd pipe.
-# This is the only layer where the pipe is visible — the Python downstream
-# shouldn't have to know anything about it.
+# `0<&2` duplicates fd 2 (stderr) into fd 0. The canonical invocation pipes
+# this script through `curl … | zsh`, so zsh's fd 0 is the curl pipe — but
+# fd 2 is still the user's terminal, inherited all the way down from the
+# calling shell as a direct pty slave fd. Duping fd 2 to fd 0 gives the
+# exec'd command an fd 0 that's the same kernel fd as its stderr — a real
+# pty slave, not a `/dev/tty`-cloned fd. This matters because macOS's
+# `/dev/tty` cloning driver produces fds that `kqueue` can't register for
+# `EVFILT_READ`, which breaks `prompt_toolkit` / `questionary` downstream.
 exec nix run \
   --refresh \
   --extra-experimental-features "nix-command flakes" \
-  "$BOOTSTRAP_FLAKE" -- "$@" </dev/tty
+  "$BOOTSTRAP_FLAKE" -- "$@" 0<&2

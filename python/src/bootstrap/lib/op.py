@@ -32,7 +32,6 @@ import logging
 import time
 
 from bootstrap.lib import sh
-from bootstrap.lib.errors import PrereqMissing
 
 _log = logging.getLogger(__name__)
 
@@ -70,20 +69,25 @@ async def read(path: str) -> str:
     return result.stdout.rstrip("\n")
 
 
-async def signin_wait(timeout_s: float = 180.0, poll_interval_s: float = 2.0) -> None:
-    """Poll until `op` can read account data, or raise after `timeout_s`.
+async def signin_wait(poll_interval_s: float = 2.0) -> None:
+    """Poll until `op` can read account data. Runs forever; Ctrl-C to abort.
 
     Uses `op user get --me`, not `op whoami`, because the latter doesn't
     engage desktop-app integration. Emits a progress line every ~10
     seconds, including the most recent stderr from `op` so the user can
     see *what* is failing (approval pending, GUI locked, not yet enabled
-    in Developer settings, etc.) instead of an opaque timeout.
+    in Developer settings, etc.).
+
+    There's no hard timeout because first-time 1Password sign-in can
+    take arbitrarily long: account recovery, MFA setup, finding the
+    "Integrate with 1Password CLI" toggle under Developer Settings,
+    etc. The user can Ctrl-C to abort if they need to bail.
     """
+    _log.info("waiting for 1Password CLI sign-in — press Ctrl-C to abort")
     start = time.monotonic()
-    deadline = start + timeout_s
     attempts = 0
     last_stderr = ""
-    while time.monotonic() < deadline:
+    while True:
         result = await _user_me_result()
         if _parse_user_me(result):
             _log.info("1Password CLI signed in")
@@ -98,7 +102,3 @@ async def signin_wait(timeout_s: float = 180.0, poll_interval_s: float = 2.0) ->
             if last_stderr:
                 _log.info("  op said: %s", last_stderr)
         await asyncio.sleep(poll_interval_s)
-    raise PrereqMissing(
-        "1Password CLI sign-in",
-        where=f"timed out after {timeout_s:.0f}s; last op error: {last_stderr or 'none'}",
-    )

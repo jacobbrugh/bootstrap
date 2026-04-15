@@ -1,27 +1,35 @@
 """register phase — add this host to `registry.toml` and `.sops.yaml`.
 
-Full decision tree:
+The hostname prompt + Darwin rename happen at CLI entry (see cli.py),
+before this phase runs. `ctx.hostname` is already the final chosen name
+by the time `run()` starts, and the SSH phase has already uploaded a
+key built from that name.
+
+Flow:
 
 1. Ensure the canonical dotfiles checkout exists, is clean, and up-to-date.
-2. Prompt for the desired hostname (default: current system hostname).
-3. On Darwin, if the chosen hostname differs from the current system
-   hostname, rename the machine via `scutil --set` (requires sudo).
-4. Branch on `(host_in_registry, local_age_key_exists, keys_match)`:
+2. Load `registry.toml` and `.sops.yaml`, branch on
+   `(host_in_registry, local_age_key_exists, anchor_matches_pubkey)`:
      Case A: host NOT in registry → REGISTER NEW HOST sub-flow.
-     Case B: host in registry, local key exists & matches → skip to symlink step.
+     Case B: host in registry, local key exists & matches an anchor by
+             pubkey content → skip to symlink step.
      Case C: host in registry, local key MISSING → prompt to regenerate,
              then REPLACE EXISTING HOST KEY sub-flow.
-     Case D: host in registry, local key exists but MISMATCHES registered
-             pubkey → hard fail with manual-recovery instructions.
-5. Ensure the OS-specific default flake path is a symlink to the canonical
-   repo (always runs, idempotent).
-
-No transactional rollback or paranoid "did anything else change?" guard:
-the commit step uses `git add -- <explicit paths>`, which by construction
-only stages the paths we listed. If any step before `commit` fails, the
-exception propagates, nothing is committed, and the next re-run picks up
-whatever state is left (clone_or_pull will re-pull or error on a dirty
-tree, both of which are safer than a git-reset-hard on exception).
+     Case D: host in registry, local key exists but doesn't match any
+             anchor → hard fail with manual-recovery instructions.
+3. Register / re-register: generate or extract the host's age key,
+   add it to `registry.toml` and `.sops.yaml`, `sops updatekeys` every
+   affected secret file, verify the new host can decrypt, commit, push.
+   The destructive block (file saves → updatekeys → commit → push) is
+   wrapped in `git_ops.transactional_edit` so any exception does
+   `git reset --hard` back to the HEAD we saw on entry, rolling back
+   both uncommitted edits and local-but-unpushed commits.
+4. Install the OS-specific default flake-path symlink. This runs in a
+   `try/finally` covering the whole phase, so it fires on normal exit,
+   early return (dry-run short-circuit, Case B skip), or any exception
+   from the body — ensuring `darwin-rebuild` / `nixos-rebuild` /
+   `home-manager` can resolve the flake even if a mid-phase crash
+   left the registration incomplete.
 """
 
 from __future__ import annotations
@@ -36,7 +44,6 @@ from bootstrap.lib import (
     host_info,
     prompts,
     registry_toml,
-    sh,
     sops_ops,
     sops_yaml,
     symlinks,
@@ -51,7 +58,6 @@ from bootstrap.lib.paths import (
     SOPS_AGE_KEY_FILE,
 )
 from bootstrap.lib.runtime import Context
-from bootstrap.platform import Platform
 
 NAME = "register"
 
@@ -70,187 +76,171 @@ _SECRETS_REL = Path("nix/secrets.yaml")
 
 
 async def run(ctx: Context) -> None:
-    # 1. Canonical repo ----------------------------------------------------
-    await git_ops.clone_or_pull(
-        DOTFILES_GIT_REMOTE,
-        ctx.canonical_repo,
-        dry_run=ctx.dry_run,
-    )
-
-    # In dry-run mode, clone_or_pull is a no-op (git clone is destructive=True),
-    # so on a fresh machine the canonical repo doesn't exist after the "would
-    # run" log. Every subsequent step in this phase reads files out of the
-    # canonical repo via direct Path.read_text calls — not through sh.run —
-    # so the dry-run/destructive plumbing doesn't apply to them. Detect the
-    # missing-repo + dry-run state here and skip the rest of the phase with
-    # a clear message, rather than crashing on FileNotFoundError at the first
-    # registry_toml.load call.
-    if ctx.dry_run and not (ctx.canonical_repo / ".git").exists():
-        _log.info(
-            "[dry-run] canonical repo not present at %s — skipping rest of "
-            "register phase. Run without --dry-run (or clone the dotfiles "
-            "manually to %s) to exercise the full decision tree.",
+    # Wrap the whole phase in try/finally so `_ensure_symlink` fires on
+    # every exit path — normal completion, early return (dry-run
+    # short-circuit, Case B skip), or any exception. If register crashes
+    # mid-phase, the flake symlink still gets installed so a manual
+    # darwin-rebuild / nixos-rebuild / home-manager can resolve the flake.
+    try:
+        # 1. Canonical repo ------------------------------------------------
+        await git_ops.clone_or_pull(
+            DOTFILES_GIT_REMOTE,
             ctx.canonical_repo,
-            ctx.canonical_repo,
-        )
-        await _ensure_symlink(ctx)
-        return
-
-    # 2. Hostname prompt ---------------------------------------------------
-    # `scutil --get LocalHostName` on macOS returns the user-friendly name
-    # like "Jacobs-Mac-mini", but our registry requires `[a-z][a-z0-9-]*`
-    # (DNS-safe lowercase). Lowercase the default so accepting it Just
-    # Works. If the user types a mixed-case name, validate_hostname raises
-    # a clear error — that's fine.
-    chosen = await prompts.text(
-        "hostname for this machine:",
-        default=ctx.hostname.lower(),
-        non_interactive=ctx.non_interactive,
-    )
-    host_info.validate_hostname(chosen)
-
-    # 3. Darwin rename if needed ------------------------------------------
-    if chosen != ctx.hostname and ctx.platform is Platform.DARWIN:
-        _log.info("renaming machine from %s to %s", ctx.hostname, chosen)
-        await sh.prime_sudo(dry_run=ctx.dry_run)
-        await host_info.rename_darwin(chosen, dry_run=ctx.dry_run)
-        ctx.hostname = chosen
-    elif chosen != ctx.hostname:
-        # On Linux/NixOS we don't auto-rename — the nixos-rebuild config
-        # controls the hostname directly. The user picked a name; trust it.
-        ctx.hostname = chosen
-
-    hostname = ctx.hostname
-
-    # 4. Load registry + .sops.yaml and decide -----------------------------
-    registry_path = ctx.canonical_repo / _REGISTRY_REL
-    sops_path = ctx.canonical_repo / _SOPS_YAML_REL
-    bot_secrets_path = ctx.canonical_repo / _BOT_SECRETS_REL
-    secrets_path = ctx.canonical_repo / _SECRETS_REL
-
-    registry = registry_toml.load(registry_path)
-    sops_doc = sops_yaml.load(sops_path)
-    anchor_name = f"host_{hostname}"
-    host_in_registry = registry_toml.has_host(registry, hostname)
-    local_key_present = SOPS_AGE_KEY_FILE.exists()
-
-    if host_in_registry and local_key_present:
-        local_pubkey = await age_ops.extract_public_key(SOPS_AGE_KEY_FILE)
-        registered_pubkey = sops_yaml.get_registered_pubkey(sops_doc, anchor_name)
-        if registered_pubkey is not None:
-            if registered_pubkey == local_pubkey:
-                _log.info(
-                    "host %s already registered with matching age key — skipping edit",
-                    hostname,
-                )
-                await _ensure_symlink(ctx)
-                return
-            raise DecisionTreeError(
-                f"local age key at {SOPS_AGE_KEY_FILE} does not match the pubkey "
-                f"registered for {hostname!r} in .sops.yaml. Either restore the "
-                f"correct key file, or delete the {anchor_name} anchor from .sops.yaml "
-                f"and re-run to replace it."
-            )
-        # Host is in registry.toml but has no sops anchor — partial state.
-        _log.warning(
-            "host %s in registry.toml but no %s anchor in .sops.yaml — treating as re-register",
-            hostname,
-            anchor_name,
-        )
-
-    if host_in_registry and not local_key_present:
-        regenerate = await prompts.confirm(
-            f"Host {hostname} is registered but no local age key exists at "
-            f"{SOPS_AGE_KEY_FILE}. Generate a new key and replace the registered one?",
-            default=False,
-            non_interactive=ctx.non_interactive,
-        )
-        if not regenerate:
-            raise UserAbort(f"declined to regenerate missing age key for {hostname}")
-        # Strip the stale anchor + every alias reference to it. The add_age_key
-        # call further down will then re-declare the anchor (same name, new
-        # pubkey) and add_to_creation_rule reinstates the alias references.
-        sops_yaml.remove_age_key(sops_doc, anchor_name)
-
-    # 5. Register / re-register --------------------------------------------
-    tags = await _select_tags(ctx)
-    system = host_info.system_string()
-
-    touched_sops: list[Path] = [_SOPS_YAML_REL, _BOT_SECRETS_REL]
-    if not _NON_SENSITIVE_TAGS.intersection(tags):
-        touched_sops.append(_SECRETS_REL)
-
-    pubkey = await _ensure_age_key(ctx)
-
-    if host_in_registry:
-        _log.info("re-registering %s (existing entry)", hostname)
-    else:
-        registry_toml.add_host(registry, hostname, system=system, tags=tags)
-        _log.info("added %s to registry.toml", hostname)
-
-    sops_yaml.add_age_key(sops_doc, anchor_name, pubkey)
-    sops_yaml.add_to_creation_rule(
-        sops_doc,
-        _BOT_SECRETS_REL.as_posix() + "$",
-        anchor_name,
-    )
-    if _SECRETS_REL in touched_sops:
-        sops_yaml.add_to_creation_rule(
-            sops_doc,
-            _SECRETS_REL.as_posix() + "$",
-            anchor_name,
-        )
-
-    if not ctx.dry_run:
-        registry_toml.save(registry, registry_path)
-        sops_yaml.save(sops_doc, sops_path)
-
-    # sops updatekeys — re-encrypt secret files against the new recipient list.
-    # In dry-run, ctx.bootstrap_age_key_file is None because ephemeral_secrets
-    # didn't touch 1Password. The sh.run inside update_keys is destructive=True,
-    # so it becomes a "would run" log without actually reading the None path.
-    if not ctx.dry_run:
-        assert ctx.bootstrap_age_key_file is not None
-        await sops_ops.update_keys(
-            bot_secrets_path,
-            age_key_file=ctx.bootstrap_age_key_file,
-            repo=ctx.canonical_repo,
             dry_run=ctx.dry_run,
         )
-        if _SECRETS_REL in touched_sops:
-            await sops_ops.update_keys(
-                secrets_path,
-                age_key_file=ctx.bootstrap_age_key_file,
-                repo=ctx.canonical_repo,
+
+        # In dry-run mode, clone_or_pull is a no-op (git clone is
+        # destructive=True), so on a fresh machine the canonical repo
+        # doesn't exist after the "would run" log. Every subsequent step
+        # in this phase reads files out of the canonical repo via direct
+        # Path.read_text calls — not through sh.run — so the
+        # dry-run/destructive plumbing doesn't apply to them. Detect the
+        # missing-repo + dry-run state here and return early rather than
+        # crashing on FileNotFoundError at the first registry_toml.load
+        # call. The finally block still installs the symlink.
+        if ctx.dry_run and not (ctx.canonical_repo / ".git").exists():
+            _log.info(
+                "[dry-run] canonical repo not present at %s — skipping rest of "
+                "register phase. Run without --dry-run (or clone the dotfiles "
+                "manually to %s) to exercise the full decision tree.",
+                ctx.canonical_repo,
+                ctx.canonical_repo,
+            )
+            return
+
+        hostname = ctx.hostname
+
+        # 2. Load registry + .sops.yaml and decide -------------------------
+        registry_path = ctx.canonical_repo / _REGISTRY_REL
+        sops_path = ctx.canonical_repo / _SOPS_YAML_REL
+        bot_secrets_path = ctx.canonical_repo / _BOT_SECRETS_REL
+        secrets_path = ctx.canonical_repo / _SECRETS_REL
+
+        registry = registry_toml.load(registry_path)
+        sops_doc = sops_yaml.load(sops_path)
+        anchor_name = f"host_{hostname}"  # default used only for genuinely new hosts
+        host_in_registry = registry_toml.has_host(registry, hostname)
+        local_key_present = SOPS_AGE_KEY_FILE.exists()
+
+        if host_in_registry and local_key_present:
+            local_pubkey = await age_ops.extract_public_key(SOPS_AGE_KEY_FILE)
+            # Match by pubkey VALUE, not anchor name. The existing .sops.yaml
+            # uses ad-hoc anchor names that predate the host_<hostname>
+            # convention: pc_jacobmac for mac1, server_nix1..5 for the NixOS
+            # hosts, server_wsl1, server_lima1. Looking up by name would miss
+            # every one of those and fall into a duplicate-anchor trap.
+            existing_anchor = sops_yaml.find_anchor_by_pubkey(sops_doc, local_pubkey)
+            if existing_anchor is not None:
+                _log.info(
+                    "host %s already registered under anchor %s — skipping edit",
+                    hostname,
+                    existing_anchor,
+                )
+                return
+            raise DecisionTreeError(
+                f"local age key at {SOPS_AGE_KEY_FILE} does not match any anchor "
+                f"in .sops.yaml. Either restore the correct key file, or delete "
+                f"this key file and re-run to generate + register a fresh one."
+            )
+
+        if host_in_registry and not local_key_present:
+            regenerate = await prompts.confirm(
+                f"Host {hostname} is registered but no local age key exists at "
+                f"{SOPS_AGE_KEY_FILE}. Generate a new key and replace the registered one?",
+                default=False,
+                non_interactive=ctx.non_interactive,
+            )
+            if not regenerate:
+                raise UserAbort(f"declined to regenerate missing age key for {hostname}")
+            # Strip the stale anchor + every alias reference to it. The
+            # add_age_key call further down will then re-declare the anchor
+            # (same name, new pubkey) and add_to_creation_rule reinstates
+            # the alias references.
+            sops_yaml.remove_age_key(sops_doc, anchor_name)
+
+        # 3. Register / re-register ----------------------------------------
+        tags = await _select_tags(ctx)
+        system = host_info.system_string()
+
+        touched_sops: list[Path] = [_SOPS_YAML_REL, _BOT_SECRETS_REL]
+        if not _NON_SENSITIVE_TAGS.intersection(tags):
+            touched_sops.append(_SECRETS_REL)
+
+        pubkey = await _ensure_age_key(ctx)
+
+        # Wrap destructive edits in a transactional context: on any exception
+        # before we successfully push, git reset --hard to the HEAD we had on
+        # entry. Covers dirty working tree AND local-but-unpushed commits.
+        async with git_ops.transactional_edit(ctx.canonical_repo, dry_run=ctx.dry_run):
+            if host_in_registry:
+                _log.info("re-registering %s (existing entry)", hostname)
+            else:
+                registry_toml.add_host(registry, hostname, system=system, tags=tags)
+                _log.info("added %s to registry.toml", hostname)
+
+            sops_yaml.add_age_key(sops_doc, anchor_name, pubkey)
+            sops_yaml.add_to_creation_rule(
+                sops_doc,
+                _BOT_SECRETS_REL.as_posix() + "$",
+                anchor_name,
+            )
+            if _SECRETS_REL in touched_sops:
+                sops_yaml.add_to_creation_rule(
+                    sops_doc,
+                    _SECRETS_REL.as_posix() + "$",
+                    anchor_name,
+                )
+
+            if not ctx.dry_run:
+                registry_toml.save(registry, registry_path)
+                sops_yaml.save(sops_doc, sops_path)
+
+                # sops updatekeys — re-encrypt secret files against the new
+                # recipient list. Gated on `not ctx.dry_run` because in dry-run
+                # `ctx.bootstrap_age_key_file` is None (ephemeral_secrets never
+                # touched 1Password) and we'd crash on the assert below.
+                assert ctx.bootstrap_age_key_file is not None
+                await sops_ops.update_keys(
+                    bot_secrets_path,
+                    age_key_file=ctx.bootstrap_age_key_file,
+                    repo=ctx.canonical_repo,
+                    dry_run=ctx.dry_run,
+                )
+                if _SECRETS_REL in touched_sops:
+                    await sops_ops.update_keys(
+                        secrets_path,
+                        age_key_file=ctx.bootstrap_age_key_file,
+                        repo=ctx.canonical_repo,
+                        dry_run=ctx.dry_run,
+                    )
+
+                # Verify the re-encryption actually added the new host's key.
+                # We read with the local (NEW) age key, not the bootstrap
+                # key — if the new host key isn't in the recipient list,
+                # this fails.
+                await sops_ops.verify_decrypt(
+                    bot_secrets_path,
+                    age_key_file=SOPS_AGE_KEY_FILE,
+                    repo=ctx.canonical_repo,
+                )
+                if _SECRETS_REL in touched_sops:
+                    await sops_ops.verify_decrypt(
+                        secrets_path,
+                        age_key_file=SOPS_AGE_KEY_FILE,
+                        repo=ctx.canonical_repo,
+                    )
+
+            commit_msg = _format_commit_message(hostname, system, tags, touched_sops)
+            await git_ops.commit(
+                ctx.canonical_repo,
+                [_REGISTRY_REL, *touched_sops],
+                commit_msg,
                 dry_run=ctx.dry_run,
             )
-
-        # Verify the re-encryption actually added the new host's key. We
-        # read with the local (NEW) age key, not the bootstrap key — if
-        # the new host key isn't in the recipient list, this fails.
-        await sops_ops.verify_decrypt(
-            bot_secrets_path,
-            age_key_file=SOPS_AGE_KEY_FILE,
-            repo=ctx.canonical_repo,
-        )
-        if _SECRETS_REL in touched_sops:
-            await sops_ops.verify_decrypt(
-                secrets_path,
-                age_key_file=SOPS_AGE_KEY_FILE,
-                repo=ctx.canonical_repo,
-            )
-
-    commit_msg = _format_commit_message(hostname, system, tags, touched_sops)
-    await git_ops.commit(
-        ctx.canonical_repo,
-        [_REGISTRY_REL, *touched_sops],
-        commit_msg,
-        dry_run=ctx.dry_run,
-    )
-    await git_ops.push(ctx.canonical_repo, dry_run=ctx.dry_run)
-
-    # 6. Symlink default flake path ---------------------------------------
-    await _ensure_symlink(ctx)
+            await git_ops.push(ctx.canonical_repo, dry_run=ctx.dry_run)
+    finally:
+        # 4. Symlink default flake path ------------------------------------
+        await _ensure_symlink(ctx)
 
 
 # ── helpers ────────────────────────────────────────────────────────────

@@ -2,11 +2,20 @@
 
 Every function takes the repo path explicitly and invokes `git -C <repo>`,
 so callers never have to juggle cwd.
+
+Also exposes `transactional_edit`, an `@asynccontextmanager` the register
+phase wraps around its destructive edits. The context manager captures
+the current HEAD on entry and `git reset --hard`s to it from the except
+branch on any exception — covering both uncommitted edits and
+committed-but-not-yet-pushed commits. On normal exit the reset is
+skipped and the working-tree/commit state the block left behind stays.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from bootstrap.lib import sh
@@ -114,3 +123,51 @@ async def remote_url(repo: Path, *, remote: str = "origin") -> str:
         destructive=False,
     )
     return result.stdout.strip()
+
+
+async def _rev_parse_head(repo: Path) -> str:
+    result = await sh.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        destructive=False,
+    )
+    return result.stdout.strip()
+
+
+@contextlib.asynccontextmanager
+async def transactional_edit(
+    repo: Path,
+    *,
+    dry_run: bool = False,
+) -> AsyncIterator[None]:
+    """Roll `repo` back to its entry HEAD on any exception from the block.
+
+    Precondition: `clone_or_pull` runs immediately before, which enforces
+    a clean working tree on entry. On exception the except branch runs
+    `git reset --hard <initial-HEAD>`, blowing away both uncommitted
+    edits AND any commits the block created. On normal exit the reset is
+    skipped.
+
+    The reset is best-effort during cleanup: if it fails, the original
+    exception is still re-raised and the entry HEAD is logged so the
+    user can manually run `git reset --hard <sha>`.
+    """
+    if dry_run:
+        _log.info("would record initial HEAD of %s for transactional rollback", repo)
+        try:
+            yield
+        finally:
+            _log.info("would roll back %s on failure (dry-run)", repo)
+        return
+
+    initial_head = await _rev_parse_head(repo)
+    _log.debug("transactional_edit: initial HEAD of %s = %s", repo, initial_head)
+    try:
+        yield
+    except BaseException:
+        _log.warning("rolling back %s to %s after failure", repo, initial_head[:12])
+        await sh.run(
+            ["git", "-C", str(repo), "reset", "--hard", initial_head],
+            check=False,
+            destructive=True,
+        )
+        raise

@@ -79,14 +79,22 @@ async def run_post(ctx: Context) -> None:
 
 
 async def run_full(ctx: Context) -> None:
-    """Run the entire platform-appropriate phase list in one invocation."""
+    """Run the entire platform-appropriate phase list in one invocation.
+
+    `ephemeral_secrets` wraps only ssh + register because those are the
+    only phases that touch the bootstrap age key / GitHub token. The
+    switch phase uses the HOST's own age key (written by register into
+    ~/.config/sops/age/keys.txt) for sops-nix activation, not the
+    bootstrap key, so we exit the secrets context before switching and
+    shred the bootstrap key 10-20 minutes earlier.
+    """
     await run_prereqs(ctx)
     await run_onepassword(ctx)
     async with secrets.ephemeral_secrets(ctx):
         await _run_ssh_inner(ctx)
         await _run_register_inner(ctx)
-        with log.phase("switch"):
-            await _dispatch_switch(ctx)
+    with log.phase("switch"):
+        await _dispatch_switch(ctx)
     await run_post(ctx)
 
 
