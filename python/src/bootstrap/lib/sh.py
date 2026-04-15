@@ -131,7 +131,7 @@ async def sudo_run(
     installer — re-prime once (prompting the user) and retry. Any other
     sudo failure propagates unchanged.
     """
-    sudo_cmd: tuple[str, ...] = ("sudo", "-n", *cmd)
+    sudo_cmd: tuple[str, ...] = ("sudo", "-nH", *cmd)
 
     async def _invoke() -> Result:
         return await run(
