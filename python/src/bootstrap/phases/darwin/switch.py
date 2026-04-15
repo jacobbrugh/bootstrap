@@ -32,6 +32,13 @@ _log = logging.getLogger(__name__)
 
 
 async def run(ctx: Context) -> None:
+    # Re-prime sudo before the switch. The sudo cache from the initial
+    # hostname rename (cli.py) may have expired during the register phase.
+    # sudo_run with capture=False can't detect a cache miss from stderr
+    # (stderr goes to the terminal, result.stderr is ""), so we prime
+    # explicitly here rather than relying on the auto-retry in sudo_run.
+    await sh.prime_sudo(dry_run=ctx.dry_run)
+
     darwin_rebuild = shutil.which("darwin-rebuild")
     if darwin_rebuild is not None:
         _log.info("running `sudo darwin-rebuild switch`")
