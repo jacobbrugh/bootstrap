@@ -48,6 +48,6 @@ SSH_KNOWN_HOSTS: Path = SSH_DIR / "known_hosts"
 SSH_KEY: Path = SSH_DIR / "id_ed25519"
 
 # ── Default flake symlink targets per-platform ──────────────────────────
-DARWIN_FLAKE_SYMLINK: Path = Path("/etc/nix-darwin/flake.nix")
-NIXOS_FLAKE_SYMLINK: Path = Path("/etc/nixos/flake.nix")
-HM_FLAKE_SYMLINK: Path = XDG_CONFIG_HOME / "home-manager" / "flake.nix"
+DARWIN_FLAKE_SYMLINK: Path = Path("/etc/nix-darwin")
+NIXOS_FLAKE_SYMLINK: Path = Path("/etc/nixos")
+HM_FLAKE_SYMLINK: Path = XDG_CONFIG_HOME / "home-manager"

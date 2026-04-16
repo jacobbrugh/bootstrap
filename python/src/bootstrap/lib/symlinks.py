@@ -98,12 +98,27 @@ async def install_flake_symlink(platform: Platform, *, dry_run: bool = False) ->
     """Install the default-flake-path symlink for `platform`.
 
     Idempotent: re-runs check the existing symlink target and no-op if it
-    already points at `CANONICAL_DOTFILES/flake.nix`.
+    already points at `CANONICAL_DOTFILES`.
+
+    All platforms use a directory-level symlink (`/etc/nix-darwin` →
+    repo root, `/etc/nixos` → repo root, etc.) rather than a file-level
+    one pointing at `flake.nix`. When nix evaluates `--flake /etc/nix-darwin`
+    it copies the source directory to the store; a file-level symlink with
+    an absolute target causes nix to treat `/` as the source root, producing
+    a broken store path like `.../source/Users/jacob/.../flake.nix`. A
+    directory-level symlink lets nix follow it to the real repo and copy the
+    whole tree correctly.
     """
     link_path = _flake_path_for(platform)
     if link_path is None:
         raise BootstrapError(f"no default flake path for platform {platform.value}")
-    target = CANONICAL_DOTFILES / "flake.nix"
+    # All platforms: symlink the directory (not a file) to the repo root.
+    # nix evaluates `--flake /etc/nix-darwin` (or /etc/nixos, etc.) by
+    # copying the source directory to the store. A file-level symlink with
+    # an absolute target causes nix to treat `/` as the source root,
+    # producing a broken store path. A directory-level symlink lets nix
+    # follow it to the real repo and copy the whole tree correctly.
+    target = CANONICAL_DOTFILES
 
     if link_path.is_symlink():
         current = link_path.resolve()
