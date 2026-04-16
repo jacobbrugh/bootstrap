@@ -23,7 +23,7 @@ import logging
 import shutil
 
 from bootstrap.lib import sh
-from bootstrap.lib.errors import BootstrapError
+from bootstrap.lib.errors import BootstrapError, ShellError
 from bootstrap.lib.runtime import Context
 
 NAME = "switch"
@@ -34,6 +34,27 @@ _log = logging.getLogger(__name__)
 # /usr/bin/env to set it after sudo's env scrub. accept-new = auto-accept
 # first-time host keys (TOFU), still rejects if a known key changes.
 _ENV_PREFIX = ["/usr/bin/env", "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new"]
+
+# nix-darwin exits 5 on first activation when launchd can't bootstrap services
+# into a fresh context ("Bootstrap failed: 5: Input/output error"). The system
+# IS configured — home-manager ran, files are linked, packages are installed.
+# A second `darwin-rebuild switch` (or reboot + rerun) clears it. Don't crash.
+_LAUNCHD_BOOTSTRAP_RC = 5
+
+
+async def _switch(cmd: list[str], *, dry_run: bool) -> None:
+    result = await sh.sudo_run(cmd, check=False, capture=False, dry_run=dry_run, destructive=True)
+    if result.dry_run_skipped or result.ok():
+        return
+    if result.returncode == _LAUNCHD_BOOTSTRAP_RC:
+        _log.warning(
+            "darwin switch exited %d (launchd bootstrap error on first activation — "
+            "this is normal on a fresh Mac). Re-run bootstrap or `darwin-rebuild switch` "
+            "to finish; a reboot first may be needed.",
+            _LAUNCHD_BOOTSTRAP_RC,
+        )
+        return
+    raise ShellError(list(result.cmd), result.returncode, result.stderr)
 
 
 async def run(ctx: Context) -> None:
@@ -47,12 +68,7 @@ async def run(ctx: Context) -> None:
     darwin_rebuild = shutil.which("darwin-rebuild")
     if darwin_rebuild is not None:
         _log.info("running `sudo darwin-rebuild switch`")
-        await sh.sudo_run(
-            [*_ENV_PREFIX, darwin_rebuild, "switch"],
-            capture=False,
-            dry_run=ctx.dry_run,
-            destructive=True,
-        )
+        await _switch([*_ENV_PREFIX, darwin_rebuild, "switch"], dry_run=ctx.dry_run)
         return
 
     nix_path = shutil.which("nix")
@@ -62,7 +78,7 @@ async def run(ctx: Context) -> None:
             "put it there, something is wrong with the Nix install"
         )
     _log.info("bootstrapping nix-darwin for the first time via `sudo nix run`")
-    await sh.sudo_run(
+    await _switch(
         [
             *_ENV_PREFIX,
             nix_path,
@@ -73,7 +89,5 @@ async def run(ctx: Context) -> None:
             "--",
             "switch",
         ],
-        capture=False,
         dry_run=ctx.dry_run,
-        destructive=True,
     )
