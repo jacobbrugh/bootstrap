@@ -29,6 +29,15 @@ class Context:
     # Windows-host phases that drive the host via `sh.run_powershell`.
     has_windows_host: bool = False
 
+    # Sandbox hosts (CI runners, throwaway NixOS VMs, kubevirt instances)
+    # get the restricted "sandbox" bootstrap age key, which can decrypt
+    # `bootstrap-secrets-sandbox.sops.yaml` only — so it yields the bot
+    # GitHub PAT rather than the user PAT, and the host's own generated
+    # age key is excluded from `nix/secrets.yaml`'s creation_rule. Set at
+    # CLI entry from either the interactive sandbox prompt or the
+    # `BOOTSTRAP_SANDBOX=1` non-interactive override.
+    is_sandbox: bool = False
+
     # Populated by the `ephemeral_secrets` context manager. `bootstrap_age_key_file` is an
     # ephemeral path (under `$XDG_RUNTIME_DIR`) cleaned up at process exit;
     # `github_token` is held in memory only and `repr=False` keeps it out of

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from bootstrap.lib import brew, op, sh
 from bootstrap.lib.runtime import Context
@@ -13,6 +14,15 @@ _log = logging.getLogger(__name__)
 
 
 async def run(ctx: Context) -> None:
+    # Headless path (SOPS_AGE_KEY_FILE pre-staged) skips the 1Password
+    # GUI install and signin wait entirely — the secrets layer reads
+    # the bootstrap age key from disk without ever calling `op`. Rare
+    # on Darwin but valid (e.g. restoring a dev machine from a backup
+    # that already has the key file, or a CI Darwin runner).
+    if os.environ.get("SOPS_AGE_KEY_FILE"):
+        _log.info("SOPS_AGE_KEY_FILE set — skipping 1Password install + signin (not needed)")
+        return
+
     await brew.install_cask("1password", dry_run=ctx.dry_run)
 
     if ctx.dry_run:

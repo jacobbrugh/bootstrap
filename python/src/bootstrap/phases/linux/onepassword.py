@@ -8,6 +8,7 @@ expected to sign in via `op signin` in another terminal, or via the
 from __future__ import annotations
 
 import logging
+import os
 
 from bootstrap.lib import op
 from bootstrap.lib.runtime import Context
@@ -20,6 +21,12 @@ _log = logging.getLogger(__name__)
 async def run(ctx: Context) -> None:
     if ctx.dry_run:
         _log.info("would wait for 1Password CLI sign-in")
+        return
+    # Headless bootstrap path: SOPS_AGE_KEY_FILE is set, so the secrets
+    # layer will read the bootstrap age key directly from disk and
+    # `op` is never called. Nothing for this phase to unblock.
+    if os.environ.get("SOPS_AGE_KEY_FILE"):
+        _log.info("SOPS_AGE_KEY_FILE set — skipping 1Password signin (not needed)")
         return
     if await op.is_signed_in():
         _log.info("1Password CLI already able to read data")

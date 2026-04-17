@@ -201,6 +201,19 @@ async def run(ctx: Context) -> None:
             )
         else:
             tags = await _select_tags(ctx)
+
+        # ctx.is_sandbox is load-bearing: it determined which bootstrap
+        # age key + sops file the secrets layer used, and it'll determine
+        # which GitHub PAT the ssh phase uploads to. The on-disk
+        # representation of "this is a sandbox host" is the "sandbox"
+        # tag in `registry.toml`, consumed by `_NON_SENSITIVE_TAGS`
+        # below to exclude the host from `nix/secrets.yaml`'s
+        # creation_rule. Force the two in sync: a sandbox run always
+        # commits the "sandbox" tag, regardless of what a stale
+        # registry entry or a deselected checkbox said.
+        if ctx.is_sandbox and "sandbox" not in tags:
+            _log.info("forcing 'sandbox' tag (ctx.is_sandbox is set)")
+            tags = [*tags, "sandbox"]
         system = host_info.system_string()
 
         touched_sops: list[Path] = [_SOPS_YAML_REL, _BOT_SECRETS_REL]

@@ -125,6 +125,26 @@ def _run_phase(
             non_interactive=non_interactive,
         )
         host_info.validate_hostname(chosen)
+
+        # Sandbox prompt follows hostname. On sandbox hosts (CI, throwaway
+        # NixOS VMs, kubevirt) the bootstrap uses the restricted "sandbox"
+        # age key which only decrypts bootstrap-secrets-sandbox.sops.yaml
+        # (bot PAT) — and the host's own generated age key is excluded
+        # from nix/secrets.yaml's creation_rule by the existing
+        # `_NON_SENSITIVE_TAGS` logic in the register phase.
+        #
+        # `BOOTSTRAP_SANDBOX=1` env var is the non-interactive override —
+        # CI runs and scripted provisioning set it and skip the prompt.
+        sandbox_env = os.environ.get("BOOTSTRAP_SANDBOX")
+        if sandbox_env is not None:
+            is_sandbox = sandbox_env.strip().lower() in ("1", "true", "yes", "y")
+        else:
+            is_sandbox = await prompts.confirm(
+                "is this a sandbox host?",
+                default=False,
+                non_interactive=non_interactive,
+            )
+
         if platform is Platform.DARWIN and not os.environ.get("BOOTSTRAP_SKIP_RENAME"):
             # Always call rename_darwin on Darwin, even when chosen matches
             # detected_hostname. `detect_hostname` reads LocalHostName, but
@@ -152,6 +172,7 @@ def _run_phase(
             non_interactive=non_interactive,
             verbose=verbose,
             has_windows_host=(platform is Platform.NIXOS_WSL),
+            is_sandbox=is_sandbox,
         )
         coro = getattr(orchestrator, entry)
         await coro(ctx)
