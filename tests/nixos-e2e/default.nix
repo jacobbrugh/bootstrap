@@ -159,6 +159,33 @@ let
         machine.succeed("su - jacob -c 'git clone --quiet --bare /home/jacob/dotfiles /home/jacob/origin.git'")
         machine.succeed("su - jacob -c 'cd /home/jacob/dotfiles && git remote add origin /home/jacob/origin.git'")
 
+        # --- Debug probe: confirm sudo preserves NIX_PATH + nix-rebuild works ---
+        # Mirrors exactly what the switch phase will do, but with
+        # --show-trace so the full nix error (not bootstrap's 400-char
+        # truncated ShellError) surfaces in the test log.
+        machine.succeed("ln -sfn /home/jacob/dotfiles /etc/nixos")
+        rc, env_dump = machine.execute(
+            "su - jacob -c 'env | grep -E \"^NIX_\" || echo (no NIX_* env)'"
+        )
+        print("=== jacob env NIX_* ===")
+        print(env_dump)
+        print("=== end env ===")
+
+        rc, sudo_env = machine.execute(
+            "su - jacob -c 'sudo -nH env | grep -E \"^NIX_\" || echo (no NIX_* in sudo)'"
+        )
+        print("=== sudo env NIX_* ===")
+        print(sudo_env)
+        print("=== end sudo env ===")
+
+        rc, probe_out = machine.execute(
+            "su - jacob -c 'sudo -nH nixos-rebuild switch --show-trace 2>&1'"
+        )
+        print(f"=== probe (sudo nixos-rebuild switch --show-trace) rc={rc} ===")
+        print(probe_out)
+        print("=== end probe ===")
+        assert rc == 0, f"nixos-rebuild switch probe failed (rc={rc}); see output above"
+
         # --- Run the full bootstrap (all 6 phases) -----------------------
         #
         # No BOOTSTRAP_FLAKE_SYMLINK_PATH override: we WANT register's
