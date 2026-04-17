@@ -43,7 +43,12 @@ let
     let
       fixture = pkgs.callPackage ./fixture.nix { inherit variant; };
       bootstrapForTest = pkgs.callPackage ./bootstrap-for-test.nix {
-        inherit bootstrap fixture mockGh variant;
+        inherit
+          bootstrap
+          fixture
+          mockGh
+          variant
+          ;
       };
     in
     pkgs.testers.nixosTest {
@@ -112,9 +117,12 @@ let
 
         # Writable dotfiles checkout and a co-located bare origin so
         # register phase's `git push` has somewhere to go. Both owned
-        # by the `jacob` user.
+        # by the `jacob` user. `cp -r` from /nix/store preserves
+        # read-only perms (0444/0555), so chmod -R u+w after chown to
+        # let jacob actually `git init` + `git add` + sops-edit.
         machine.succeed("cp -r ${fixture}/checkout /home/jacob/dotfiles")
         machine.succeed("chown -R jacob:users /home/jacob/dotfiles")
+        machine.succeed("chmod -R u+w /home/jacob/dotfiles")
         machine.succeed(
             "su - jacob -c 'cd /home/jacob/dotfiles && "
             "git init --quiet --initial-branch=main && "
