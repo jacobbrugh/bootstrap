@@ -69,17 +69,22 @@ jobs:
     # jacobpbrugh/dotfiles flake with `sudo nixos-rebuild switch`.
     #
     # Patterns here are copy-pasted from the dotfiles repo's
-    # nixos-build-and-deploy.yml — same self-hosted runner pool, same
-    # container, same nix.conf + Attic netrc setup. The bootstrap repo
-    # needs to be added to the `dotfiles-nixos-runners` runner group's
-    # repository access list for this job to find a runner.
+    # nixos-build-and-deploy.yml — same cluster / container / nix.conf
+    # / Attic netrc setup. GitHub self-hosted runners bind one-to-one
+    # to a single repo/org/enterprise URL, so the dotfiles-nixos-runners
+    # scale set cannot serve this repo. The dotfiles repo's
+    # actions-runner-controller config declares a second scale set
+    # (`applications.bootstrap-runners` in
+    # `nix/services/k3s/apps/actions-runner-controller.nix`) that
+    # listens on jacobbrugh/bootstrap with a distinct label; that's the
+    # label we target below.
     #
     # Runtime inputs live on a 9p share at /tmp/bootstrap-e2e-shared:
     #   - dotfiles/      — real chezmoi checkout (HTTPS + read token)
     #   - sandbox-key    — SANDBOX_BOOTSTRAP_AGE_KEY (GHA secret)
     #   - nix-netrc      — ATTIC_TOKEN (GHA secret), for the VM's
     #                      nix-daemon to auth against the Attic cache
-    runs-on: dotfiles-nixos-runners
+    runs-on: bootstrap-nixos-runners
     container:
       image: nixos/nix:2.24.12
     env:
