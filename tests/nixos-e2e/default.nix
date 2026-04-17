@@ -146,6 +146,23 @@ let
         machine.succeed("su - jacob -c 'git clone --quiet --bare /home/jacob/dotfiles /home/jacob/origin.git'")
         machine.succeed("su - jacob -c 'cd /home/jacob/dotfiles && git remote add origin /home/jacob/origin.git'")
 
+        # --- Probe nixos-rebuild directly first (debug aid) --------------
+        # nixos-rebuild's full error dump is >400 chars and bootstrap's
+        # ShellError truncates stderr at 400 chars, so actual eval
+        # failures get hidden behind "… while" mid-trace. Run it
+        # manually first with --show-trace, print the whole output, and
+        # fail the test WITHOUT the truncation if eval is broken.
+        machine.succeed("ln -sfn /home/jacob/dotfiles /etc/nixos-probe")
+        probe_cmd = (
+            "NIX_PATH=nixpkgs=${pkgs.path}:nixos-config=/etc/nixos-probe/configuration.nix "
+            "sudo -E nixos-rebuild build --show-trace 2>&1"
+        )
+        rc, probe_out = machine.execute(probe_cmd)
+        print("=== nixos-rebuild build probe (rc=", rc, ") ===", flush=True)
+        print(probe_out, flush=True)
+        print("=== end probe ===", flush=True)
+        assert rc == 0, f"nixos-rebuild build probe failed (rc={rc}); see output above"
+
         # --- Run the full bootstrap (all 6 phases) -----------------------
         #
         # No BOOTSTRAP_FLAKE_SYMLINK_PATH override: we WANT register's
