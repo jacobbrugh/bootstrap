@@ -55,6 +55,28 @@
     "flakes"
   ];
 
+  # sops-nix: decrypt the bundled bootstrap GitHub PAT at activation.
+  # The operator pre-stages the bootstrap age key at
+  # `/var/lib/nixos-bootstrap/age-key` before running the NixOS
+  # installer (same file `phase0-firstboot` uses — one key does both
+  # jobs). sops-nix reads the `github_token` field out of
+  # `secrets/bootstrap-secrets.sops.yaml` and drops the plaintext at
+  # `/run/secrets/bootstrap-github-token`. The bootstrap CLI reads
+  # from there (see `lib/secrets.py`) — it does no decryption itself.
+  sops.defaultSopsFile = ../../secrets/bootstrap-secrets.sops.yaml;
+  sops.age.keyFile = "/var/lib/nixos-bootstrap/age-key";
+  sops.secrets.bootstrap-github-token = {
+    key = "github_token";
+    # Plaintext goes to /run/secrets/bootstrap-github-token by default
+    # (sops-nix derives the path from the secret name). Mode 0400,
+    # owned by root — only the bootstrap CLI (which runs as jacob but
+    # reads the file before the ssh/register phases can touch it)
+    # needs it. Jacob has read access via the wheel group.
+    mode = "0440";
+    owner = "root";
+    group = "wheel";
+  };
+
   system.stateVersion = "24.11";
 
   # ── Bare-metal specifics (overridden by ./wsl.nix for the WSL variant) ─

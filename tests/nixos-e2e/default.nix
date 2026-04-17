@@ -19,7 +19,13 @@
 # hosting GHA workflow populates /tmp/bootstrap-e2e-shared before
 # launching the test driver; this file specifies the destination side.
 
-{ pkgs }:
+{
+  pkgs,
+  # sops-nix flake input, passed in from flake.nix so the test VM can
+  # import the NixOS module + decrypt `secrets/bootstrap-secrets.sops.yaml`
+  # at activation time the same way Phase 0 does.
+  sops-nix,
+}:
 
 let
   mockGh = pkgs.callPackage ./mock-gh.nix { };
@@ -37,6 +43,7 @@ let
       nodes.machine =
         { ... }:
         {
+          imports = [ sops-nix.nixosModules.sops ];
           # `bootstrap/lib/host_info.py:67-94` detects hostname via
           # `hostname -s` on Linux. nixos-rebuild picks
           # `nixosConfigurations.$(hostname)` by default. Setting this
@@ -95,6 +102,20 @@ let
             source = "/tmp/bootstrap-e2e-shared";
             target = "/mnt/shared";
           };
+
+          # sops-nix: same bundled sops file Phase 0 uses, plus the
+          # operator-pre-staged bootstrap age key — which the 9p share
+          # surfaces at /mnt/shared/sandbox-key. Pointing sops.age.keyFile
+          # directly at the share avoids a copy step + activation-ordering
+          # fight with sops-nix's setup-secrets service.
+          sops.defaultSopsFile = ../../secrets/bootstrap-secrets.sops.yaml;
+          sops.age.keyFile = "/mnt/shared/sandbox-key";
+          sops.secrets.bootstrap-github-token = {
+            key = "github_token";
+            mode = "0440";
+            owner = "root";
+            group = "wheel";
+          };
         };
 
       testScript = ''
@@ -134,16 +155,13 @@ let
             "su - jacob -c 'git -C /home/jacob/dotfiles remote add origin /home/jacob/origin.git'"
         )
 
-        # Sandbox bootstrap age key. The workflow wrote it to the share
-        # from the SANDBOX_BOOTSTRAP_AGE_KEY GHA secret. Copy into the
-        # canonical `SOPS_AGE_KEY_FILE` path the operator would pre-
-        # stage on a real headless host.
-        machine.succeed("mkdir -p /home/jacob/.config/sops/age")
-        machine.succeed("chown -R jacob:users /home/jacob/.config")
-        machine.succeed(
-            "install -m 600 -o jacob -g users /mnt/shared/sandbox-key "
-            "/home/jacob/sops-age-key.txt"
-        )
+        # At this point the VM has already activated with sops-nix; the
+        # plaintext token is at /run/secrets/bootstrap-github-token
+        # (written at boot from /mnt/shared/sandbox-key →
+        # /var/lib/nixos-bootstrap/age-key → decrypt
+        # secrets/bootstrap-secrets.sops.yaml). The bootstrap CLI reads
+        # that file on its own — no env override needed.
+        machine.succeed("test -r /run/secrets/bootstrap-github-token")
 
         # Snapshot the pre-switch system so we can assert the switch
         # phase actually transitioned to a new toplevel.
@@ -152,12 +170,11 @@ let
         # --- Run production bootstrap (all 6 phases) ---------------------
         # No `BOOTSTRAP_HOSTNAME` (VM's `networking.hostName` drives it
         # via `hostname -s`). No `BOOTSTRAP_SKIP_RENAME` (no-op on
-        # NixOS). No `BOOTSTRAP_TEST_*` bypasses — the sandbox age key
-        # decrypts the bundled `bootstrap-secrets-sandbox.sops.yaml`
-        # for real.
+        # NixOS). Bootstrap reads the sops-nix-written token from
+        # /run/secrets/bootstrap-github-token; mock `gh` answers api
+        # calls.
         machine.succeed(
             "su - jacob -c '"
-            "export SOPS_AGE_KEY_FILE=/home/jacob/sops-age-key.txt && "
             "export BOOTSTRAP_CANONICAL_DOTFILES=/home/jacob/dotfiles && "
             "export BOOTSTRAP_DOTFILES_REMOTE=/home/jacob/origin.git && "
             "export BOOTSTRAP_SANDBOX=1 && "

@@ -142,6 +142,17 @@ cd "$CHECKOUT"
 # after cloning the bare repo out. `remote add`, not `set-url`.
 git remote add origin "$ORIGIN"
 
+# --- Plaintext token file ---------------------------------------------
+# Bootstrap's secrets.py now reads a plaintext token file written by
+# sops-nix at Phase 0 activation; on CI there's no sops-nix so we
+# materialize the file ourselves and override the lookup path via
+# BOOTSTRAP_GITHUB_TOKEN_FILE. Content doesn't matter — gh is the
+# only consumer and the BOOTSTRAP_TEST_GIT_AUTHOR_* env vars short-
+# circuit the gh API lookup in register.py.
+TOKEN_FILE="$TEST_ROOT/bootstrap-github-token"
+printf 'ci-dummy-token' > "$TOKEN_FILE"
+chmod 600 "$TOKEN_FILE"
+
 # --- Run the bootstrap ------------------------------------------------
 cd "$BOOTSTRAP_DIR"
 echo "[ci-test-register] running ./result/bin/bootstrap register --non-interactive"
@@ -150,8 +161,8 @@ BOOTSTRAP_DOTFILES_REMOTE="$ORIGIN" \
 BOOTSTRAP_HOSTNAME="$FAKE_HOSTNAME" \
 BOOTSTRAP_SKIP_RENAME=1 \
 BOOTSTRAP_FLAKE_SYMLINK_PATH="$FAKE_SYMLINK" \
-SOPS_AGE_KEY_FILE="$AGE_KEY_FILE" \
-BOOTSTRAP_TEST_GITHUB_TOKEN="ci-dummy-token" \
+BOOTSTRAP_GITHUB_TOKEN_FILE="$TOKEN_FILE" \
+BOOTSTRAP_AGE_KEY_FILE="$AGE_KEY_FILE" \
 BOOTSTRAP_TEST_GIT_AUTHOR_NAME="CI Test User" \
 BOOTSTRAP_TEST_GIT_AUTHOR_EMAIL="ci-test@example.com" \
 "$BOOTSTRAP_DIR/result/bin/bootstrap" register --non-interactive

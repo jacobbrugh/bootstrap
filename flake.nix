@@ -15,6 +15,10 @@
       url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -24,6 +28,7 @@
       nixos-wsl,
       nix-win,
       git-hooks,
+      sops-nix,
     }:
     let
       systems = [
@@ -48,19 +53,7 @@
         pkgs.python3.pkgs.buildPythonApplication {
           pname = "bootstrap";
           version = "0.1.0";
-          # Compose `python/` + the repo-root `secrets/` into a single
-          # source tree so hatchling's force-include can resolve paths
-          # like `../secrets/bootstrap-secrets.sops.yaml` from
-          # pyproject.toml (which lives under python/). `sourceRoot`
-          # then cds the build into the nested python/ dir.
-          src = pkgs.lib.fileset.toSource {
-            root = ./.;
-            fileset = pkgs.lib.fileset.unions [
-              ./python
-              ./secrets
-            ];
-          };
-          sourceRoot = "source/python";
+          src = pkgs.lib.cleanSource ./python;
           pyproject = true;
 
           build-system = with pkgs.python3.pkgs; [ hatchling ];
@@ -139,6 +132,7 @@
         wsl-bootstrap = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
+            sops-nix.nixosModules.sops
             nixos-wsl.nixosModules.default
             ./nix/nixos
             ./nix/nixos/wsl.nix
@@ -152,6 +146,7 @@
             bootstrap = nixpkgs.lib.nixosSystem {
               system = "x86_64-linux";
               modules = [
+                sops-nix.nixosModules.sops
                 ./nix/nixos
                 ./host-hardware.nix
                 (if builtins.pathExists ./host-networking.nix then ./host-networking.nix else { })
@@ -191,7 +186,7 @@
           bootstrap = mkBootstrap pkgs;
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-          e2e-nixos-sandbox = (import ./tests/nixos-e2e { inherit pkgs; }).mkTest {
+          e2e-nixos-sandbox = (import ./tests/nixos-e2e { inherit pkgs sops-nix; }).mkTest {
             bootstrap = mkBootstrap pkgs;
           };
         }

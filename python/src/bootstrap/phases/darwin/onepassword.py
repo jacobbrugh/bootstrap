@@ -1,11 +1,23 @@
-"""Darwin onepassword — install GUI, launch, block until CLI can read data."""
+"""Darwin onepassword — raise for now; Darwin bootstrap path is unimplemented.
+
+Bootstrap secrets now come exclusively from a plaintext file written by
+sops-nix at Phase 0 NixOS activation — see `lib/secrets.py`. Darwin
+doesn't have sops-nix. Re-introducing Darwin support needs one of:
+  - A nix-darwin sops-nix equivalent that writes plaintext at a known
+    path before the bootstrap CLI runs.
+  - A pre-bootstrap manual step that writes the plaintext token to
+    `$BOOTSTRAP_GITHUB_TOKEN_FILE` + the age key to
+    `$BOOTSTRAP_AGE_KEY_FILE`, then runs bootstrap.
+
+Option 2 is trivially supported already — just set the two env vars
+before invoking bootstrap.
+"""
 
 from __future__ import annotations
 
 import logging
-import os
 
-from bootstrap.lib import brew, op, sh
+from bootstrap.lib.errors import BootstrapError
 from bootstrap.lib.runtime import Context
 
 NAME = "onepassword"
@@ -14,27 +26,10 @@ _log = logging.getLogger(__name__)
 
 
 async def run(ctx: Context) -> None:
-    # Headless path (SOPS_AGE_KEY_FILE pre-staged) skips the 1Password
-    # GUI install and signin wait entirely — the secrets layer reads
-    # the bootstrap age key from disk without ever calling `op`. Rare
-    # on Darwin but valid (e.g. restoring a dev machine from a backup
-    # that already has the key file, or a CI Darwin runner).
-    if os.environ.get("SOPS_AGE_KEY_FILE"):
-        _log.info("SOPS_AGE_KEY_FILE set — skipping 1Password install + signin (not needed)")
-        return
-
-    await brew.install_cask("1password", dry_run=ctx.dry_run)
-
-    if ctx.dry_run:
-        _log.info("would launch 1Password GUI and poll until op can read account data")
-        return
-
-    if await op.is_signed_in():
-        _log.info("1Password CLI already able to read data — skipping GUI launch")
-        return
-
-    _log.info("launching 1Password GUI — sign in, then enable")
-    _log.info("  Settings > Developer > 'Integrate with 1Password CLI' and unlock once")
-    await sh.run(["open", "-a", "1Password"], destructive=True)
-
-    await op.signin_wait()
+    del ctx
+    raise BootstrapError(
+        "Darwin bootstrap is temporarily unsupported. Secrets now come from "
+        "sops-nix on NixOS; Darwin has no equivalent. Pre-stage the token + "
+        "age-key manually and set BOOTSTRAP_GITHUB_TOKEN_FILE + "
+        "BOOTSTRAP_AGE_KEY_FILE, or skip this phase."
+    )
