@@ -1,21 +1,48 @@
-# Build-time fixture: generates a fresh bootstrap age key, encrypts a
-# tier-specific bootstrap-secrets file with it (for the bootstrapForTest
-# derivation's package data), and lays out a minimal throwaway dotfiles
-# checkout whose .sops.yaml / bot-secrets.yaml / secrets.yaml are
-# encrypted to the same bootstrap key. The bootstrap age key, the
-# bundled sops file, and the fixture checkout all travel together to
-# the VM so the register phase can actually decrypt + re-encrypt
-# against them.
+# Build-time fixture for the e2e test. Does three things:
 #
-# One fixture per scenario (devbox vs sandbox). Scenario selection picks
-# which filename the bundled sops file ships under
-# (`bootstrap-secrets-{variant}.sops.yaml`); nothing else changes.
+#   1. Generates a fresh bootstrap age key + encrypts a tier-specific
+#      `bootstrap-secrets-{variant}.sops.yaml` with it (consumed by
+#      `bootstrap-for-test.nix`).
+#
+#   2. Lays out a minimal dotfiles checkout — registry.toml + .sops.yaml
+#      + bot-secrets.yaml + secrets.yaml + tags/ — encrypted to the
+#      same bootstrap key. The register phase mutates these.
+#
+#   3. Drops a `configuration.nix` + `post-switch-module.nix` into the
+#      checkout so `nixos-rebuild switch` (classic, not flake) has
+#      something to evaluate. The module is also pre-built here via
+#      `eval-config.nix`, and the resulting toplevel store path is
+#      exposed via `passthru.postSwitchToplevel`. The VM config adds
+#      it to `virtualisation.additionalPaths` so when the switch phase
+#      runs inside the VM, the same toplevel is already cached — no
+#      network, no full rebuild, just a switch-to-configuration
+#      activation.
+#
+# Classic (non-flake) rather than flake-based: nixos-rebuild resolves
+# `<nixpkgs/nixos>` through NIX_PATH (set by `nix.nixPath` on the VM
+# side) and reads `/etc/nixos/configuration.nix` by default. The
+# register phase's `_ensure_symlink` installs `/etc/nixos` → the
+# dotfiles checkout, so that path lands on our `configuration.nix`.
+# Skipping flakes sidesteps the chicken-and-egg `flake.lock` problem
+# (a pure fixture derivation can't run `nix flake lock`).
 
 {
   pkgs,
-  # "devbox" | "sandbox" — selects the bundled filename and the fake token
+  # "devbox" | "sandbox" — selects the bundled sops filename and the
+  # fake github_token value the decrypted payload will yield.
   variant,
 }:
+
+let
+  # Evaluate the post-switch module through nixpkgs' nixos infra to get
+  # a real system toplevel. Same module that ends up in the checkout,
+  # so `nixos-rebuild switch` inside the VM hashes to this exact path.
+  postSwitchEval = import "${pkgs.path}/nixos/lib/eval-config.nix" {
+    system = "x86_64-linux";
+    modules = [ ./post-switch-module.nix ];
+  };
+  postSwitchToplevel = postSwitchEval.config.system.build.toplevel;
+in
 
 pkgs.runCommand "bootstrap-e2e-fixture-${variant}"
   {
@@ -24,10 +51,14 @@ pkgs.runCommand "bootstrap-e2e-fixture-${variant}"
       pkgs.sops
       pkgs.coreutils
     ];
-    # `sops` needs SOPS_AGE_KEY_FILE in its env to encrypt — we set it
-    # from the freshly generated key. Declaring no env here keeps the
-    # derivation deterministic for `nix build` reproducibility purposes
-    # (new key every rebuild; that's fine since the fixture is ephemeral).
+    passthru = {
+      # Exposed so tests/nixos-e2e/default.nix can add this toplevel to
+      # the VM's /nix/store via `virtualisation.additionalPaths`. Without
+      # it, `nixos-rebuild switch` inside the VM would try to build it
+      # and fail (no network, and the host nixpkgs source isn't in the
+      # VM's store either).
+      inherit postSwitchToplevel;
+    };
   }
   ''
     set -euo pipefail
@@ -50,10 +81,10 @@ pkgs.runCommand "bootstrap-e2e-fixture-${variant}"
     SOPS_AGE_RECIPIENTS=$PUBKEY sops -e -i --input-type yaml --output-type yaml $out/bootstrap-secrets-${variant}.sops.yaml
 
     # --- Fixture dotfiles checkout ------------------------------------
-    # Minimal shape of the real dotfiles repo: registry.toml + tags dir
-    # + .sops.yaml + bot-secrets.yaml + secrets.yaml. Everything
-    # encrypted to the bootstrap key; the register phase will generate
-    # a fresh HOST key and re-encrypt against both keys.
+    # Minimal shape of the real dotfiles repo plus a `configuration.nix`
+    # for `nixos-rebuild switch` to evaluate. Everything encrypted to
+    # the bootstrap key; register will generate a fresh HOST key and
+    # re-encrypt against both keys.
     mkdir -p $out/checkout/nix/config/hosts
     mkdir -p $out/checkout/nix/config/tags
 
@@ -102,5 +133,21 @@ pkgs.runCommand "bootstrap-e2e-fixture-${variant}"
       SOPS_AGE_KEY_FILE=$out/bootstrap-age-key.txt sops -e -i nix/secrets.yaml
     )
 
-    echo "[fixture] generated at $out" >&2
+    # --- NixOS config files (classic, not flake) ---------------------
+    # `nixos-rebuild switch` with no --flake arg defaults to
+    # /etc/nixos/configuration.nix. The register phase's _ensure_symlink
+    # points /etc/nixos at this checkout, so configuration.nix here is
+    # what gets evaluated. It imports post-switch-module.nix (same file
+    # used to pre-build the toplevel above — identical inputs yield
+    # the same store path, so the VM's pre-staged toplevel is hit
+    # directly instead of rebuilt).
+    cat > $out/checkout/configuration.nix <<'NIX'
+    { ... }:
+    {
+      imports = [ ./post-switch-module.nix ];
+    }
+    NIX
+    cp ${./post-switch-module.nix} $out/checkout/post-switch-module.nix
+
+    echo "[fixture] generated at $out (post-switch toplevel: ${postSwitchToplevel})" >&2
   ''

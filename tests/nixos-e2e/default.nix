@@ -1,28 +1,40 @@
-# End-to-end bootstrap test on a fresh NixOS VM.
+# End-to-end bootstrap test on a fresh NixOS VM. Runs the ENTIRE
+# 6-phase flow (prereqs → onepassword → ssh → register → switch → post),
+# not just register.
 #
-# Exposes two `pkgs.nixosTest` checks:
-#   - `nixos-e2e-devbox`   — devbox tier; secrets.yaml gets the anchor
+# Exposes two `pkgs.testers.nixosTest` checks:
+#   - `nixos-e2e-devbox`   — devbox tier; secrets.yaml gets the anchor.
 #   - `nixos-e2e-sandbox`  — sandbox tier (BOOTSTRAP_SANDBOX=1); the
 #                            "sandbox" tag forces skipping secrets.yaml
-#                            and the anchor must NOT be added to its
+#                            and the anchor must NOT land in its
 #                            creation_rule.
 #
 # Each scenario:
-#   1. Builds a fresh bootstrap age key + variant-specific encrypted
-#      sops file + fixture dotfiles checkout (via fixture.nix).
-#   2. Builds `bootstrapForTest` — the real bootstrap package with the
-#      test sops file substituted and mock `gh` prepended to PATH.
-#   3. Boots a NixOS VM with `bootstrapForTest` on PATH, the bootstrap
-#      key staged at `SOPS_AGE_KEY_FILE`, the fixture cloned into a tmp
-#      dotfiles checkout, and a local bare-repo origin.
-#   4. Runs `bootstrap-register --non-interactive` and asserts:
-#        - register phase exits 0 (secrets decrypted, sops updatekeys,
-#          commit pushed)
-#        - registry.toml in the pushed commit has a `[test-host-…]`
-#          entry
-#        - .sops.yaml in the pushed commit has a `host_…` anchor
-#        - in the sandbox scenario, `secrets.yaml` is NOT in
-#          the creation_rule for the new anchor (only bot-secrets.yaml)
+#   1. Builds fresh bootstrap age key + variant-specific encrypted sops
+#      file + fixture dotfiles with `configuration.nix` + `post-switch-
+#      module.nix`. fixture.nix also pre-builds the post-switch toplevel
+#      and exposes it as `passthru.postSwitchToplevel`.
+#   2. Builds `bootstrapForTest` — production bootstrap with the test
+#      sops file substituted and mock `gh` prepended to PATH.
+#   3. Boots a NixOS VM with:
+#        - bootstrapForTest + runtime tools on PATH
+#        - the pre-built post-switch toplevel in /nix/store (via
+#          `virtualisation.additionalPaths`) so the switch phase has
+#          nothing to actually build — just activate.
+#        - `nix.nixPath` pointing at the host nixpkgs source so classic
+#          `nixos-rebuild switch` can resolve `<nixpkgs/nixos>`.
+#   4. Stages the bootstrap age key + fixture checkout + local bare
+#      origin in /home/jacob.
+#   5. Runs `bootstrap --non-interactive` (the full orchestrator) and
+#      asserts the end state:
+#        - register phase committed + pushed (registry.toml, .sops.yaml
+#          changes in the bare origin's HEAD).
+#        - devbox|sandbox semantics hold (anchor in secrets.yaml iff
+#          devbox).
+#        - the switch phase actually activated the new system: the
+#          post-switch marker file `/etc/bootstrap-e2e-marker` exists
+#          with the expected content. This is the "full sandboxed
+#          host" proof.
 
 { pkgs }:
 
@@ -57,10 +69,6 @@ let
       nodes.machine =
         { ... }:
         {
-          # Headless, no GUI, minimal. bootstrapForTest wrapper bundles
-          # git/sops/age on PATH already — we include them in
-          # environment.systemPackages too so the testScript setup
-          # (which runs outside the wrapper) can use them directly.
           environment.systemPackages = with pkgs; [
             bootstrapForTest
             git
@@ -69,10 +77,6 @@ let
             openssh
           ];
 
-          # A real unprivileged user with passwordless sudo. The
-          # register phase doesn't actually call sudo, but the symlink
-          # step (_ensure_symlink) does if the target's parent needs
-          # mkdir — and we point the symlink at /tmp to dodge that.
           users.users.jacob = {
             isNormalUser = true;
             extraGroups = [ "wheel" ];
@@ -80,46 +84,54 @@ let
           };
           security.sudo.wheelNeedsPassword = false;
 
-          # Needed so `git push` from the test over file:// protocol
-          # works without ssh. The register phase uses whatever remote
-          # url the fixture git config has, which will be a file://
-          # path to the bare repo we set up in the testScript.
           programs.git.enable = true;
-
-          # Headless VM: prevent the systemd-ssh-proxy watchdog from
-          # firing during nixosTest boots; nothing here needs ssh in.
           services.openssh.enable = false;
+
+          # classic nixos-rebuild resolves `<nixpkgs>` via NIX_PATH.
+          # Pin it to the exact store path fixture.nix pre-built the
+          # toplevel against, so re-evaluation inside the VM hashes to
+          # the cached toplevel rather than trying to fetch anything.
+          nix.nixPath = [ "nixpkgs=${pkgs.path}" ];
+          nix.settings.experimental-features = [
+            "nix-command"
+            "flakes"
+          ];
+          # Pure offline evaluation — fail loudly if anything tries to
+          # reach the internet instead of silently timing out.
+          nix.settings.substituters = pkgs.lib.mkForce [ ];
+          nix.settings.trusted-substituters = pkgs.lib.mkForce [ ];
+
+          # Stage everything nixos-rebuild switch will need into the
+          # VM's /nix/store:
+          #   - the pre-built post-switch toplevel (what switch will
+          #     activate to — identical hash means no rebuild)
+          #   - the host nixpkgs source (what `<nixpkgs/nixos>`
+          #     resolves to for evaluation)
+          virtualisation.additionalPaths = [
+            fixture.postSwitchToplevel
+            pkgs.path
+          ];
 
           virtualisation = {
             cores = 2;
-            memorySize = 2048;
-            diskSize = 4096;
+            memorySize = 4096;
+            diskSize = 8192;
           };
         };
 
-      # `testScript` runs on the HOST as python. `machine.succeed(…)`
-      # shells into the VM. All the setup lives here so the
-      # nodes.machine module stays focused on "what NixOS looks like"
-      # rather than "how the test is driven."
       testScript = ''
         start_all()
         machine.wait_for_unit("multi-user.target")
 
         # --- Stage age key + fixture checkout + bare origin --------------
-        # The fixture derivation is in /nix/store/… (nixosTest auto-
-        # shares the store), so we can read it directly but must copy
-        # out of it to get a writable dotfiles checkout.
         machine.succeed("mkdir -p /home/jacob/.config/sops/age")
         machine.succeed("cp ${fixture}/bootstrap-age-key.txt /home/jacob/sops-age-key.txt")
         machine.succeed("chown -R jacob:users /home/jacob/.config")
         machine.succeed("chown jacob:users /home/jacob/sops-age-key.txt")
         machine.succeed("chmod 600 /home/jacob/sops-age-key.txt")
 
-        # Writable dotfiles checkout and a co-located bare origin so
-        # register phase's `git push` has somewhere to go. Both owned
-        # by the `jacob` user. `cp -r` from /nix/store preserves
-        # read-only perms (0444/0555), so chmod -R u+w after chown to
-        # let jacob actually `git init` + `git add` + sops-edit.
+        # `cp -r` from /nix/store preserves 0444/0555 read-only perms;
+        # chmod -R u+w after chown so jacob can actually write.
         machine.succeed("cp -r ${fixture}/checkout /home/jacob/dotfiles")
         machine.succeed("chown -R jacob:users /home/jacob/dotfiles")
         machine.succeed("chmod -R u+w /home/jacob/dotfiles")
@@ -134,21 +146,17 @@ let
         machine.succeed("su - jacob -c 'git clone --quiet --bare /home/jacob/dotfiles /home/jacob/origin.git'")
         machine.succeed("su - jacob -c 'cd /home/jacob/dotfiles && git remote add origin /home/jacob/origin.git'")
 
-        # --- Run bootstrap-register --------------------------------------
-        # All BOOTSTRAP_* envs mirror scripts/ci-test-register.sh:
-        # canonical path + git remote pointed at the fixture, hostname
-        # spoofed, OS rename skipped, flake symlink target pointed at
-        # /tmp so we don't touch /etc/nixos.
+        # --- Run the full bootstrap (all 6 phases) -----------------------
         #
-        # SOPS_AGE_KEY_FILE is THE production mechanism introduced by
-        # Chunk A — this exercises the headless path end-to-end (no
-        # BOOTSTRAP_TEST_GITHUB_TOKEN bypass). The bundled sops file
-        # in bootstrapForTest is encrypted to this exact key.
+        # No BOOTSTRAP_FLAKE_SYMLINK_PATH override: we WANT register's
+        # _ensure_symlink to install /etc/nixos → /home/jacob/dotfiles
+        # so the subsequent `sudo nixos-rebuild switch` in the switch
+        # phase reads /home/jacob/dotfiles/configuration.nix by default.
         #
-        # BOOTSTRAP_SANDBOX=${sandboxEnv} picks the tier. The sandbox
-        # scenario also auto-adds the "sandbox" tag (enforced by
-        # register.py) which triggers `_NON_SENSITIVE_TAGS` to skip
-        # secrets.yaml.
+        # SOPS_AGE_KEY_FILE drives the headless production path. The
+        # bundled bootstrap-secrets-${variant}.sops.yaml in
+        # bootstrapForTest is encrypted to this exact key; mock `gh`
+        # answers api calls from the ssh + register phases.
         hostname = "test-e2e-${variant}"
         machine.succeed(
             "su - jacob -c '"
@@ -157,15 +165,24 @@ let
             "export BOOTSTRAP_DOTFILES_REMOTE=/home/jacob/origin.git && "
             f"export BOOTSTRAP_HOSTNAME={hostname} && "
             "export BOOTSTRAP_SKIP_RENAME=1 && "
-            "export BOOTSTRAP_FLAKE_SYMLINK_PATH=/tmp/fake-flake-link && "
             "export BOOTSTRAP_SANDBOX=${sandboxEnv} && "
-            "bootstrap-register --non-interactive'"
+            "bootstrap --non-interactive'",
+            timeout=600,
         )
 
-        # --- Assertions --------------------------------------------------
-        # Inspect the pushed bare origin directly so we know the
-        # register phase didn't just commit locally but actually pushed.
+        # --- Post-switch sanity: the new system actually activated -------
+        # The post-switch-module.nix we pre-built and pre-staged declares
+        # `environment.etc."bootstrap-e2e-marker".text = "bootstrapped"`.
+        # Its presence is the proof that `sudo nixos-rebuild switch`
+        # inside the VM ran AND switch-to-configuration activated the
+        # new toplevel — the "full sandboxed host" exit condition.
+        marker_content = machine.succeed("cat /etc/bootstrap-e2e-marker").strip()
+        assert marker_content == "bootstrapped", (
+            f"expected /etc/bootstrap-e2e-marker to contain 'bootstrapped', "
+            f"got: {marker_content!r}"
+        )
 
+        # --- Register-phase assertions: commit landed in bare origin -----
         log_subject = machine.succeed(
             "su - jacob -c 'git -C /home/jacob/origin.git log -1 --format=%s main'"
         ).strip()
@@ -189,21 +206,11 @@ let
 
         # The sandbox tier MUST NOT get its host key added to
         # secrets.yaml's creation_rule — that's the privileged file.
-        # We parse the anchor's position in sops_yaml and confirm that
-        # the `secrets.yaml$` creation_rule's key_groups doesn't
-        # reference it.
         if ${if assertSandboxAnchorSkipped then "True" else "False"}:
-            # Split on the `path_regex: 'nix/secrets.yaml$'` rule and
-            # inspect just that rule's body. It's enough to check that
-            # `*host_<hostname>` doesn't appear in the substring between
-            # that header and the next creation_rules entry.
             marker = "path_regex: 'nix/secrets.yaml$'"
             assert marker in sops_yaml, (
                 f"expected secrets.yaml creation_rule block, not found in: {sops_yaml!r}"
             )
-            # Take everything after the secrets.yaml rule header up to
-            # the next `  - path_regex:` (or EOF). That slice is the
-            # key_groups block for secrets.yaml.
             after = sops_yaml.split(marker, 1)[1]
             next_rule = after.find("\n  - path_regex:")
             block = after if next_rule < 0 else after[:next_rule]
@@ -212,9 +219,6 @@ let
                 f"but was: {block!r}"
             )
         else:
-            # Non-sandbox: the anchor MUST appear in the secrets.yaml
-            # creation_rule (the host gets access to the privileged
-            # secrets file).
             marker = "path_regex: 'nix/secrets.yaml$'"
             after = sops_yaml.split(marker, 1)[1]
             next_rule = after.find("\n  - path_regex:")
@@ -224,9 +228,9 @@ let
                 f"but was NOT. block: {block!r}"
             )
 
-        # Also sanity-check that the generated host age key was written
-        # to the standard sops path and is decryptable with the newly
-        # committed .sops.yaml (roundtrip).
+        # Roundtrip: the generated host age key can decrypt what register
+        # just re-encrypted (verifies sops updatekeys actually added the
+        # host as a recipient, independent of the devbox/sandbox logic).
         machine.succeed(
             "su - jacob -c '"
             "SOPS_AGE_KEY_FILE=/home/jacob/.config/sops/age/keys.txt "
