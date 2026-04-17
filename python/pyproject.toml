@@ -39,7 +39,16 @@ packages = ["src/bootstrap"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/bootstrap/data/github_known_hosts.txt" = "bootstrap/data/github_known_hosts.txt"
-"src/bootstrap/data/bootstrap-secrets.sops.yaml" = "bootstrap/data/bootstrap-secrets.sops.yaml"
+# Bundled sops files live at the repo-root `secrets/` directory
+# alongside `phase0.yaml` (Nix consumes that one). Hatchling copies
+# each listed file into `bootstrap/data/` at wheel-build time so
+# `importlib.resources.files("bootstrap.data")` finds them at runtime.
+#
+# When you add a new bundled secret (the devbox + sandbox variants
+# are planned), add an entry here pointing at the new file under
+# `../secrets/`. force-include fails the build if a listed source
+# doesn't exist, so only enumerate files that are committed.
+"../secrets/bootstrap-secrets.sops.yaml" = "bootstrap/data/bootstrap-secrets.sops.yaml"
 
 [tool.mypy]
 strict = true

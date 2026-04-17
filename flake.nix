@@ -48,7 +48,19 @@
         pkgs.python3.pkgs.buildPythonApplication {
           pname = "bootstrap";
           version = "0.1.0";
-          src = pkgs.lib.cleanSource ./python;
+          # Compose `python/` + the repo-root `secrets/` into a single
+          # source tree so hatchling's force-include can resolve paths
+          # like `../secrets/bootstrap-secrets.sops.yaml` from
+          # pyproject.toml (which lives under python/). `sourceRoot`
+          # then cds the build into the nested python/ dir.
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./python
+              ./secrets
+            ];
+          };
+          sourceRoot = "source/python";
           pyproject = true;
 
           build-system = with pkgs.python3.pkgs; [ hatchling ];

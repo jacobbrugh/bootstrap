@@ -105,11 +105,12 @@
   #   - age-key              → the bootstrap age private key (for sops)
   #   - tailscale-auth-key   → a single-use Tailscale/Headscale preauth key
   #
-  # With those present, this script decrypts `./secrets/phase0.yaml`
-  # (committed in the public bootstrap repo, encrypted to the bootstrap age
-  # pubkey) to get the Headscale login-server URL and the timezone, then
-  # runs `timedatectl` + `tailscale up`. On success all three runtime files
-  # are shredded so the key material doesn't persist after firstboot.
+  # With those present, this script decrypts the top-level
+  # `secrets/phase0.yaml` (committed in the public bootstrap repo,
+  # encrypted to the bootstrap age pubkey) to get the Headscale login-
+  # server URL and the timezone, then runs `timedatectl` + `tailscale
+  # up`. On success all three runtime files are shredded so the key
+  # material doesn't persist after firstboot.
   systemd.services.phase0-firstboot = {
     description = "Phase 0 firstboot: timezone + Tailscale auth via sops";
     after = [
@@ -132,7 +133,7 @@
       set -eu
       AGE_KEY_FILE="/var/lib/nixos-bootstrap/age-key"
       AUTH_KEY_FILE="/var/lib/nixos-bootstrap/tailscale-auth-key"
-      SOPS_FILE="${./secrets/phase0.yaml}"
+      SOPS_FILE="${../../secrets/phase0.yaml}"
 
       if [ ! -f "$AGE_KEY_FILE" ] || [ ! -f "$AUTH_KEY_FILE" ]; then
         echo "phase0-firstboot: age-key or tailscale-auth-key missing; skipping"
