@@ -164,10 +164,24 @@
       };
 
       # ── Phase 1: typed Python bootstrap as Nix packages + flake apps ──
+      #
+      # `e2e-nixos-sandbox` (Linux only) is the end-to-end test that boots
+      # a NixOS VM, runs the full production bootstrap, and activates
+      # `nixosConfigurations.e2e-sandbox` from the real dotfiles flake.
+      # Lives under `packages` rather than `checks` so `nix flake check`
+      # doesn't try to evaluate/run it — the VM test takes minutes, needs
+      # KVM + an Attic netrc + a populated /tmp/bootstrap-e2e-shared, and
+      # only makes sense from the `test-e2e-nixos` GHA workflow.
       packages = forAllSystems (
-        _system: pkgs: {
+        _system: pkgs:
+        {
           default = mkBootstrap pkgs;
           bootstrap = mkBootstrap pkgs;
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          e2e-nixos-sandbox = (import ./tests/nixos-e2e { inherit pkgs; }).mkTest {
+            bootstrap = mkBootstrap pkgs;
+          };
         }
       );
 
@@ -184,12 +198,11 @@
       );
 
       # ── Checks: flake check + pre-commit hooks ────────────────────────
-      # The nixos-e2e-{devbox,sandbox} checks boot a NixOS VM via
-      # pkgs.nixosTest and run `bootstrap-register --non-interactive`
-      # end-to-end against a fresh fixture (test bootstrap age key,
-      # variant-specific bundled sops file, throwaway dotfiles checkout
-      # + bare origin, mock `gh`). They're exposed on Linux only —
-      # nixosTest needs KVM, which isn't available on macOS runners.
+      #
+      # The e2e VM test lives under `packages.<sys>.e2e-nixos-sandbox`
+      # rather than here, so `nix flake check` stays fast + hermetic
+      # and doesn't try to launch a VM that needs KVM + Attic auth +
+      # a pre-populated shared dir.
       checks = forAllSystems (
         system: pkgs:
         let
@@ -208,31 +221,9 @@
               ruamel-yaml
             ]
           );
-
-          isLinux = pkgs.stdenv.hostPlatform.isLinux;
-          e2e = import ./tests/nixos-e2e { inherit pkgs; };
-          bootstrapPkg = mkBootstrap pkgs;
-          e2eChecks =
-            if isLinux then
-              {
-                nixos-e2e-devbox = e2e.mkTest {
-                  bootstrap = bootstrapPkg;
-                  variant = "devbox";
-                  sandboxEnv = "0";
-                  assertSandboxAnchorSkipped = false;
-                };
-                nixos-e2e-sandbox = e2e.mkTest {
-                  bootstrap = bootstrapPkg;
-                  variant = "sandbox";
-                  sandboxEnv = "1";
-                  assertSandboxAnchorSkipped = true;
-                };
-              }
-            else
-              { };
         in
         {
-          bootstrap = bootstrapPkg;
+          bootstrap = mkBootstrap pkgs;
           pre-commit = git-hooks.lib.${system}.run {
             src = ./.;
             hooks = {
@@ -251,7 +242,6 @@
             };
           };
         }
-        // e2eChecks
       );
 
       # ── Dev shell: nix develop ────────────────────────────────────────

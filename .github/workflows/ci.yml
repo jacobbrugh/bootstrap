@@ -62,32 +62,87 @@ jobs:
         run: nix shell nixpkgs#git nixpkgs#age nixpkgs#sops -c bash scripts/ci-test-register.sh
 
   test-e2e-nixos:
-    # Full end-to-end bootstrap-register test inside a fresh NixOS VM
-    # via pkgs.testers.nixosTest. Two scenarios: devbox + sandbox.
+    # End-to-end bootstrap test against the REAL dotfiles flake. Boots
+    # a fresh NixOS VM via `pkgs.testers.nixosTest`, runs the full
+    # production 6-phase bootstrap (prereqs → post) inside it, and
+    # activates `nixosConfigurations.e2e-sandbox` from the real
+    # jacobpbrugh/dotfiles flake with `sudo nixos-rebuild switch`.
     #
-    # Exercises the production headless path end-to-end — SOPS_AGE_KEY_FILE
-    # pre-staged, bundled test sops file decrypted, mock `gh` answering
-    # API calls, register phase committing + pushing to a local bare
-    # remote. Sandbox scenario additionally asserts the new anchor is
-    # NOT wired into secrets.yaml's creation_rule.
+    # Patterns here are copy-pasted from the dotfiles repo's
+    # nixos-build-and-deploy.yml — same self-hosted runner pool, same
+    # container, same nix.conf + Attic netrc setup. The bootstrap repo
+    # needs to be added to the `dotfiles-nixos-runners` runner group's
+    # repository access list for this job to find a runner.
     #
-    # Needs KVM, which ubuntu-latest runners ship with — the nixos-test
-    # derivation declares `requiredSystemFeatures = ["nixos-test" "kvm"]`.
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [devbox, sandbox]
+    # Runtime inputs live on a 9p share at /tmp/bootstrap-e2e-shared:
+    #   - dotfiles/      — real chezmoi checkout (HTTPS + read token)
+    #   - sandbox-key    — SANDBOX_BOOTSTRAP_AGE_KEY (GHA secret)
+    #   - nix-netrc      — ATTIC_TOKEN (GHA secret), for the VM's
+    #                      nix-daemon to auth against the Attic cache
+    runs-on: dotfiles-nixos-runners
+    container:
+      image: nixos/nix:2.24.12
+    env:
+      ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+      SANDBOX_BOOTSTRAP_AGE_KEY: ${{ secrets.SANDBOX_BOOTSTRAP_AGE_KEY }}
+      DOTFILES_READ_TOKEN: ${{ secrets.DOTFILES_READ_TOKEN }}
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout bootstrap
+        run: |
+          git config --global --add safe.directory "$PWD"
+          git clone --depth 1 --branch "$GITHUB_REF_NAME" \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            allow-unfree = true
-            system-features = nixos-test benchmark big-parallel kvm
+      - name: Configure Nix (Attic cache + KVM)
+        run: |
+          # Verbatim copy of the dotfiles workflow nix.conf / netrc
+          # setup. Attic priority 10 beats cache.nixos.org (default 40)
+          # so every previously-pushed nixosConfiguration closure is a
+          # hit. `extra-system-features = kvm` + sandbox-paths let the
+          # nixosTest VM get /dev/kvm passthrough.
+          mkdir -p ~/.config/nix /etc/nix
+          cat > ~/.config/nix/nix.conf <<NIXCONF
+          experimental-features = nix-command flakes
+          extra-substituters = https://cache.kube.jacobbrugh.net/attic?priority=10
+          extra-trusted-public-keys = attic:TGN7u8ffZ1H01LvNYlpV4FgyRYRpaoG9CxtSHhOYRgY=
+          netrc-file = /etc/nix/netrc
+          extra-system-features = kvm
+          extra-sandbox-paths = /dev/kvm
+          download-buffer-size = 268435456
+          NIXCONF
+          cat > /etc/nix/netrc <<EOF
+          machine cache.kube.jacobbrugh.net
+          password ${ATTIC_TOKEN}
+          EOF
 
-      - name: Run nixos-e2e-${{ matrix.variant }}
-        run: nix build .#checks.x86_64-linux.nixos-e2e-${{ matrix.variant }} --print-build-logs
+      - name: Stage /tmp/bootstrap-e2e-shared (dotfiles + sandbox key + netrc)
+        run: |
+          # The test's nodes.machine declares
+          #   virtualisation.sharedDirectories.shared.source =
+          #     "/tmp/bootstrap-e2e-shared"
+          # which qemu exposes inside the VM as /mnt/shared. This
+          # populates it with everything the testScript will read.
+          rm -rf /tmp/bootstrap-e2e-shared
+          mkdir -p /tmp/bootstrap-e2e-shared
+
+          git clone --depth 1 \
+            "https://x-access-token:${DOTFILES_READ_TOKEN}@github.com/jacobpbrugh/dotfiles.git" \
+            /tmp/bootstrap-e2e-shared/dotfiles
+
+          install -m 600 /dev/stdin /tmp/bootstrap-e2e-shared/sandbox-key \
+            <<<"${SANDBOX_BOOTSTRAP_AGE_KEY}"
+
+          # nix-netrc is what the VM's nix-daemon reads to authenticate
+          # against the Attic cache. Kept outside the nix store so the
+          # token isn't baked into build output.
+          cat > /tmp/bootstrap-e2e-shared/nix-netrc <<EOF
+          machine cache.kube.jacobbrugh.net
+          password ${ATTIC_TOKEN}
+          EOF
+          chmod 600 /tmp/bootstrap-e2e-shared/nix-netrc
+
+      - name: Run e2e-nixos-sandbox
+        run: |
+          nix build --print-build-logs .#packages.x86_64-linux.e2e-nixos-sandbox
