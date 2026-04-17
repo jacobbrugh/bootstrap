@@ -91,7 +91,20 @@ let
           # Pin it to the exact store path fixture.nix pre-built the
           # toplevel against, so re-evaluation inside the VM hashes to
           # the cached toplevel rather than trying to fetch anything.
+          #
+          # Three layers so any combination of sudo env stripping +
+          # nix-daemon behaviour still sees `<nixpkgs>`:
+          #   1. `nix.nixPath` → environment.sessionVariables.NIX_PATH
+          #      (seen by user shells, stripped by sudo by default)
+          #   2. `env_keep += NIX_PATH` in sudoers → preserved through
+          #      `sudo -nH nixos-rebuild switch`
+          #   3. `nix.settings.nix-path` → /etc/nix/nix.conf fallback
+          #      read by the nix-daemon itself when NIX_PATH is empty
           nix.nixPath = [ "nixpkgs=${pkgs.path}" ];
+          nix.settings.nix-path = [ "nixpkgs=${pkgs.path}" ];
+          security.sudo.extraConfig = ''
+            Defaults env_keep += "NIX_PATH"
+          '';
           nix.settings.experimental-features = [
             "nix-command"
             "flakes"
@@ -145,23 +158,6 @@ let
         )
         machine.succeed("su - jacob -c 'git clone --quiet --bare /home/jacob/dotfiles /home/jacob/origin.git'")
         machine.succeed("su - jacob -c 'cd /home/jacob/dotfiles && git remote add origin /home/jacob/origin.git'")
-
-        # --- Probe nixos-rebuild directly first (debug aid) --------------
-        # nixos-rebuild's full error dump is >400 chars and bootstrap's
-        # ShellError truncates stderr at 400 chars, so actual eval
-        # failures get hidden behind "… while" mid-trace. Run it
-        # manually first with --show-trace, print the whole output, and
-        # fail the test WITHOUT the truncation if eval is broken.
-        machine.succeed("ln -sfn /home/jacob/dotfiles /etc/nixos-probe")
-        probe_cmd = (
-            "NIX_PATH=nixpkgs=${pkgs.path}:nixos-config=/etc/nixos-probe/configuration.nix "
-            "sudo -E nixos-rebuild build --show-trace 2>&1"
-        )
-        rc, probe_out = machine.execute(probe_cmd)
-        print("=== nixos-rebuild build probe (rc=", rc, ") ===", flush=True)
-        print(probe_out, flush=True)
-        print("=== end probe ===", flush=True)
-        assert rc == 0, f"nixos-rebuild build probe failed (rc={rc}); see output above"
 
         # --- Run the full bootstrap (all 6 phases) -----------------------
         #
