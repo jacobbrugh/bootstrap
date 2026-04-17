@@ -102,9 +102,9 @@ def _run_phase(
     if platform is Platform.UNSUPPORTED:
         raise BootstrapError(f"unsupported platform: {sys.platform}")
     detected_hostname = host_info.detect_hostname()
-    # BOOTSTRAP_HOSTNAME overrides the prompt default. Used by
-    # `scripts/test-register-local.sh` to drive `--non-interactive`
-    # runs against a fake hostname without touching the real machine.
+    # BOOTSTRAP_HOSTNAME overrides the prompt default. The nixos-e2e
+    # test sets it in `--non-interactive` runs to drive a spoofed
+    # hostname without relying on the VM's real `hostname -s`.
     default_hostname = os.environ.get("BOOTSTRAP_HOSTNAME") or (
         host_info.sanitize_hostname_default(detected_hostname)
     )

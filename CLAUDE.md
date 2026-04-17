@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-The public Nix-flake entry point for bootstrapping a fresh machine into the **private** `jacobpbrugh/dotfiles` repo. The flake's `apps.default` is a typed Python CLI (`bootstrap`) that takes a fresh Mac, NixOS, Linux, or WSL/Windows host through a sequence of independent, idempotent phases ending in `darwin-rebuild switch` / `nixos-rebuild switch` / `home-manager switch`. See `README.md` for the user-facing tour and phase table.
+The public Nix-flake entry point for bootstrapping a fresh machine into the **private** `jacobbrugh/dotfiles` repo. The flake's `apps.default` is a typed Python CLI (`bootstrap`) that takes a fresh Mac, NixOS, Linux, or WSL/Windows host through a sequence of independent, idempotent phases ending in `darwin-rebuild switch` / `nixos-rebuild switch` / `home-manager switch`. See `README.md` for the user-facing tour and phase table.
 
-The companion repo this flake registers hosts into is at `git@github.com:jacobpbrugh/dotfiles.git`, cloned to the canonical local path `~/repos/jacobbrugh/nix-config/nix-config/` by the `register` phase. The user has signalled an intent to rename `dotfiles` → `nix-config` later — that rename is OUT OF SCOPE here.
+The companion repo this flake registers hosts into is at `git@github.com:jacobbrugh/dotfiles.git`, cloned to the canonical local path `~/repos/jacobbrugh/nix-config/nix-config/` by the `register` phase. The user has signalled an intent to rename `dotfiles` → `nix-config` later — that rename is OUT OF SCOPE here.
 
 ## The validation gate (READ THIS BEFORE CHANGING ANYTHING)
 
@@ -175,6 +175,6 @@ There is no decision-tree integration test for `register.py` yet — that's defe
 
 ## Out of scope
 
-- **Renaming the dotfiles GitHub repo to `nix-config`.** The user is doing this separately. The clone URL stays `git@github.com:jacobpbrugh/dotfiles.git` until told otherwise.
+- **Renaming the dotfiles GitHub repo to `nix-config`.** The user is doing this separately. The clone URL stays `git@github.com:jacobbrugh/dotfiles.git` until told otherwise.
 - **Implementing `phases/windows/` content.** The next session migrates `BootstrapUtils.psm1`'s Scoop/DSC/SSH/Tailscale/WSL functions into typed Python phases that drive the Windows host via `sh.run_powershell`. See `docs/windows-migration.md` for the function-by-function checklist and the architectural decisions made in this codebase to ease that migration.
 - **Anything that requires `nix flake check` to also build downstream k3s/argocd manifests in the dotfiles repo.** Those have their own validation chain.

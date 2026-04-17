@@ -1,18 +1,19 @@
 # End-to-end bootstrap test. Boots a fresh NixOS VM, runs the entire
 # production 6-phase bootstrap flow inside it, and activates a real
 # `nixosConfigurations.e2e-sandbox` from the user's actual dotfiles
-# flake (jacobpbrugh/dotfiles) via `sudo nixos-rebuild switch`. Not a
+# flake (jacobbrugh/dotfiles) via `sudo nixos-rebuild switch`. Not a
 # fixture mock, not a classic configuration.nix — the real flake.
 #
 # Intentional divergences from a real operator's bootstrap run:
 #   - `gh` is a PATH-prepended writeShellScriptBin stub (no GitHub API).
 #   - `BOOTSTRAP_DOTFILES_REMOTE` points at a local bare clone rather
-#     than `git@github.com:jacobpbrugh/dotfiles.git` — so no real push
+#     than `git@github.com:jacobbrugh/dotfiles.git` — so no real push
 #     downstream.
-# Everything else (SOPS_AGE_KEY_FILE as the production headless
-# mechanism, real sops decrypt + updatekeys, real nixos-rebuild switch
-# against the real flake, real sops-nix activation of the sandbox tag's
-# bot-secrets) exercises the production code path.
+# Everything else is production: sops-nix at Phase 0 decrypts the
+# bootstrap github token, register does real sops updatekeys + commit
+# + push, nixos-rebuild switch activates a real
+# `nixosConfigurations.e2e-sandbox`, sops-nix on the activated system
+# decrypts the sandbox tag's bot-secrets.
 #
 # Runtime inputs (the real dotfiles checkout + the sandbox bootstrap
 # age key) arrive via a qemu 9p share mounted at /mnt/shared. The
@@ -142,7 +143,7 @@ let
 
         # Local bare clone as the push destination. Drop/replace any
         # pre-existing `origin` remote that the real dotfiles checkout
-        # brought along (git@github.com:jacobpbrugh/dotfiles.git), so
+        # brought along (git@github.com:jacobbrugh/dotfiles.git), so
         # the register phase pushes to our ephemeral bare instead of
         # trying to reach real GitHub.
         machine.succeed(
@@ -157,10 +158,9 @@ let
 
         # At this point the VM has already activated with sops-nix; the
         # plaintext token is at /run/secrets/bootstrap-github-token
-        # (written at boot from /mnt/shared/sandbox-key →
-        # /var/lib/nixos-bootstrap/age-key → decrypt
-        # secrets/bootstrap-secrets.sops.yaml). The bootstrap CLI reads
-        # that file on its own — no env override needed.
+        # (sops-nix read the age key at /mnt/shared/sandbox-key and
+        # decrypted secrets/bootstrap-secrets.sops.yaml at boot). The
+        # bootstrap CLI reads that file on its own — no env override.
         machine.succeed("test -r /run/secrets/bootstrap-github-token")
 
         # Snapshot the pre-switch system so we can assert the switch

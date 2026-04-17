@@ -31,42 +31,12 @@ jobs:
       - name: Flake check (mypy --strict + pytest + ruff + nixfmt)
         run: nix flake check
 
-  test-register:
-    # End-to-end test for the register phase. Stands up a throwaway
-    # dotfiles fixture (age key + sops-encrypted secret files + minimal
-    # registry/tags/.sops.yaml + local bare-repo origin) and runs
-    # `bootstrap register --non-interactive` against it via
-    # BOOTSTRAP_* env overrides. Exercises: clone_or_pull, decision
-    # tree, _select_tags, _ensure_age_key, registry_toml/sops_yaml
-    # edits, sops updatekeys, sops verify_decrypt, git_ops.commit +
-    # push (with GIT_{AUTHOR,COMMITTER}_* from env), _ensure_symlink.
-    #
-    # Catches regressions in register.py / git_ops.py / sops_ops.py /
-    # secrets.py / the gh identity lookup — the kind that used to only
-    # show up on mac2 when the user actually ran the bootstrap.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            allow-unfree = true
-
-      - name: Build the bootstrap package
-        run: nix build .#default
-
-      - name: Run register end-to-end test
-        run: nix shell nixpkgs#git nixpkgs#age nixpkgs#sops -c bash scripts/ci-test-register.sh
-
   test-e2e-nixos:
     # End-to-end bootstrap test against the REAL dotfiles flake. Boots
     # a fresh NixOS VM via `pkgs.testers.nixosTest`, runs the full
     # production 6-phase bootstrap (prereqs → post) inside it, and
     # activates `nixosConfigurations.e2e-sandbox` from the real
-    # jacobpbrugh/dotfiles flake with `sudo nixos-rebuild switch`.
+    # jacobbrugh/dotfiles flake with `sudo nixos-rebuild switch`.
     #
     # Patterns here are copy-pasted from the dotfiles repo's
     # nixos-build-and-deploy.yml — same cluster / container / nix.conf
@@ -133,7 +103,7 @@ jobs:
           mkdir -p /tmp/bootstrap-e2e-shared
 
           git clone --depth 1 \
-            "https://x-access-token:${DOTFILES_READ_TOKEN}@github.com/jacobpbrugh/dotfiles.git" \
+            "https://x-access-token:${DOTFILES_READ_TOKEN}@github.com/jacobbrugh/dotfiles.git" \
             /tmp/bootstrap-e2e-shared/dotfiles
 
           install -m 600 /dev/stdin /tmp/bootstrap-e2e-shared/sandbox-key \

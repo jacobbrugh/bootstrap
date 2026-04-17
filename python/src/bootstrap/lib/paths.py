@@ -17,11 +17,10 @@ HOME: Path = Path.home()
 # Symlinks at /etc/nix-darwin/flake.nix, /etc/nixos/flake.nix, and
 # $XDG_CONFIG_HOME/home-manager/flake.nix all resolve to this directory.
 #
-# Both the path and the git remote can be overridden via env vars, which
-# is how `scripts/test-register-local.sh` points the bootstrap at a
-# throwaway checkout + local bare repo so the register phase can be
-# end-to-end tested (commit + push) without touching real dotfiles state
-# on github:jacobpbrugh/dotfiles.
+# Both the path and the git remote can be overridden via env vars — the
+# nixos-e2e VM test does this to point bootstrap at a throwaway checkout
+# + local bare origin so the register phase can commit + push without
+# touching real dotfiles state on GitHub.
 CANONICAL_DOTFILES: Path = Path(
     os.environ.get(
         "BOOTSTRAP_CANONICAL_DOTFILES",
@@ -31,7 +30,7 @@ CANONICAL_DOTFILES: Path = Path(
 
 DOTFILES_GIT_REMOTE: str = os.environ.get(
     "BOOTSTRAP_DOTFILES_REMOTE",
-    "git@github.com:jacobpbrugh/dotfiles.git",
+    "git@github.com:jacobbrugh/dotfiles.git",
 )
 
 # ── XDG base directories ────────────────────────────────────────────────
