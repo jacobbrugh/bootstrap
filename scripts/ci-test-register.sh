@@ -56,7 +56,7 @@ fi
 
 # --- Generate throwaway age keys --------------------------------------
 # Two separate keys so the test exercises the real "new host" path:
-#   1. $AGE_KEY_FILE — the "bootstrap" key (BOOTSTRAP_TEST_AGE_KEY_FILE).
+#   1. $AGE_KEY_FILE — the "bootstrap" key (exported as SOPS_AGE_KEY_FILE).
 #      This is the only recipient in the fixture's .sops.yaml, so sops
 #      can decrypt the fixture's bot-secrets / secrets files initially.
 #   2. $HOST_AGE_KEY_DEST — the host's own key, a FRESH keypair whose
@@ -150,7 +150,7 @@ BOOTSTRAP_DOTFILES_REMOTE="$ORIGIN" \
 BOOTSTRAP_HOSTNAME="$FAKE_HOSTNAME" \
 BOOTSTRAP_SKIP_RENAME=1 \
 BOOTSTRAP_FLAKE_SYMLINK_PATH="$FAKE_SYMLINK" \
-BOOTSTRAP_TEST_AGE_KEY_FILE="$AGE_KEY_FILE" \
+SOPS_AGE_KEY_FILE="$AGE_KEY_FILE" \
 BOOTSTRAP_TEST_GITHUB_TOKEN="ci-dummy-token" \
 BOOTSTRAP_TEST_GIT_AUTHOR_NAME="CI Test User" \
 BOOTSTRAP_TEST_GIT_AUTHOR_EMAIL="ci-test@example.com" \

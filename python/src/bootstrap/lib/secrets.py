@@ -172,9 +172,7 @@ async def _decrypt_sops_secrets(
     yaml = YAML(typ="safe")
     loaded = yaml.load(result.stdout)
     if not isinstance(loaded, dict):
-        raise BootstrapError(
-            f"expected a mapping in {resource_name}, got {type(loaded).__name__}"
-        )
+        raise BootstrapError(f"expected a mapping in {resource_name}, got {type(loaded).__name__}")
     return {str(k): str(v) for k, v in cast("dict[object, object]", loaded).items()}
 
 
@@ -183,9 +181,7 @@ def _extract_github_token(fields: dict[str, str], resource_name: str) -> str:
     try:
         return fields["github_token"]
     except KeyError as exc:
-        raise BootstrapError(
-            f"{resource_name} missing required field 'github_token'"
-        ) from exc
+        raise BootstrapError(f"{resource_name} missing required field 'github_token'") from exc
 
 
 @contextlib.asynccontextmanager
