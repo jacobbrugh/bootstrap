@@ -184,6 +184,12 @@
       );
 
       # ── Checks: flake check + pre-commit hooks ────────────────────────
+      # The nixos-e2e-{devbox,sandbox} checks boot a NixOS VM via
+      # pkgs.nixosTest and run `bootstrap-register --non-interactive`
+      # end-to-end against a fresh fixture (test bootstrap age key,
+      # variant-specific bundled sops file, throwaway dotfiles checkout
+      # + bare origin, mock `gh`). They're exposed on Linux only —
+      # nixosTest needs KVM, which isn't available on macOS runners.
       checks = forAllSystems (
         system: pkgs:
         let
@@ -202,9 +208,31 @@
               ruamel-yaml
             ]
           );
+
+          isLinux = pkgs.stdenv.hostPlatform.isLinux;
+          e2e = import ./tests/nixos-e2e { inherit pkgs; };
+          bootstrapPkg = mkBootstrap pkgs;
+          e2eChecks =
+            if isLinux then
+              {
+                nixos-e2e-devbox = e2e.mkTest {
+                  bootstrap = bootstrapPkg;
+                  variant = "devbox";
+                  sandboxEnv = "0";
+                  assertSandboxAnchorSkipped = false;
+                };
+                nixos-e2e-sandbox = e2e.mkTest {
+                  bootstrap = bootstrapPkg;
+                  variant = "sandbox";
+                  sandboxEnv = "1";
+                  assertSandboxAnchorSkipped = true;
+                };
+              }
+            else
+              { };
         in
         {
-          bootstrap = mkBootstrap pkgs;
+          bootstrap = bootstrapPkg;
           pre-commit = git-hooks.lib.${system}.run {
             src = ./.;
             hooks = {
@@ -223,6 +251,7 @@
             };
           };
         }
+        // e2eChecks
       );
 
       # ── Dev shell: nix develop ────────────────────────────────────────

@@ -60,3 +60,34 @@ jobs:
 
       - name: Run register end-to-end test
         run: nix shell nixpkgs#git nixpkgs#age nixpkgs#sops -c bash scripts/ci-test-register.sh
+
+  test-e2e-nixos:
+    # Full end-to-end bootstrap-register test inside a fresh NixOS VM
+    # via pkgs.testers.nixosTest. Two scenarios: devbox + sandbox.
+    #
+    # Exercises the production headless path end-to-end — SOPS_AGE_KEY_FILE
+    # pre-staged, bundled test sops file decrypted, mock `gh` answering
+    # API calls, register phase committing + pushing to a local bare
+    # remote. Sandbox scenario additionally asserts the new anchor is
+    # NOT wired into secrets.yaml's creation_rule.
+    #
+    # Needs KVM, which ubuntu-latest runners ship with — the nixos-test
+    # derivation declares `requiredSystemFeatures = ["nixos-test" "kvm"]`.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [devbox, sandbox]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            allow-unfree = true
+            system-features = nixos-test benchmark big-parallel kvm
+
+      - name: Run nixos-e2e-${{ matrix.variant }}
+        run: nix build .#checks.x86_64-linux.nixos-e2e-${{ matrix.variant }} --print-build-logs
