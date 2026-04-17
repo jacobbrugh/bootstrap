@@ -87,21 +87,31 @@ let
           programs.git.enable = true;
           services.openssh.enable = false;
 
-          # classic nixos-rebuild resolves `<nixpkgs>` via NIX_PATH.
-          # Pin it to the exact store path fixture.nix pre-built the
-          # toplevel against, so re-evaluation inside the VM hashes to
-          # the cached toplevel rather than trying to fetch anything.
+          # classic nixos-rebuild resolves `<nixpkgs>` AND `<nixos-config>`
+          # via NIX_PATH (two separate entries). The default
+          # `nixos-config=/etc/nixos/configuration.nix` was lost when we
+          # overrode `nix.nixPath`; the resulting "file 'nixos-config'
+          # was not found in the Nix search path" caused the module
+          # eval to trip exactly at `lib/modules.nix:402 (attribute
+          # 'config')` because <nixpkgs/nixos>'s configuration argument
+          # (which defaults to `<nixos-config>`) couldn't be resolved.
           #
           # Three layers so any combination of sudo env stripping +
-          # nix-daemon behaviour still sees `<nixpkgs>`:
+          # nix-daemon behaviour still sees both entries:
           #   1. `nix.nixPath` → environment.sessionVariables.NIX_PATH
           #      (seen by user shells, stripped by sudo by default)
           #   2. `env_keep += NIX_PATH` in sudoers → preserved through
           #      `sudo -nH nixos-rebuild switch`
           #   3. `nix.settings.nix-path` → /etc/nix/nix.conf fallback
           #      read by the nix-daemon itself when NIX_PATH is empty
-          nix.nixPath = [ "nixpkgs=${pkgs.path}" ];
-          nix.settings.nix-path = [ "nixpkgs=${pkgs.path}" ];
+          nix.nixPath = [
+            "nixpkgs=${pkgs.path}"
+            "nixos-config=/etc/nixos/configuration.nix"
+          ];
+          nix.settings.nix-path = [
+            "nixpkgs=${pkgs.path}"
+            "nixos-config=/etc/nixos/configuration.nix"
+          ];
           security.sudo.extraConfig = ''
             Defaults env_keep += "NIX_PATH"
           '';
@@ -158,33 +168,6 @@ let
         )
         machine.succeed("su - jacob -c 'git clone --quiet --bare /home/jacob/dotfiles /home/jacob/origin.git'")
         machine.succeed("su - jacob -c 'cd /home/jacob/dotfiles && git remote add origin /home/jacob/origin.git'")
-
-        # --- Debug probe: confirm sudo preserves NIX_PATH + nix-rebuild works ---
-        # Mirrors exactly what the switch phase will do, but with
-        # --show-trace so the full nix error (not bootstrap's 400-char
-        # truncated ShellError) surfaces in the test log.
-        machine.succeed("ln -sfn /home/jacob/dotfiles /etc/nixos")
-        rc, env_dump = machine.execute(
-            "su - jacob -c 'env | grep -E \"^NIX_\" || echo (no NIX_* env)'"
-        )
-        print("=== jacob env NIX_* ===")
-        print(env_dump)
-        print("=== end env ===")
-
-        rc, sudo_env = machine.execute(
-            "su - jacob -c 'sudo -nH env | grep -E \"^NIX_\" || echo (no NIX_* in sudo)'"
-        )
-        print("=== sudo env NIX_* ===")
-        print(sudo_env)
-        print("=== end sudo env ===")
-
-        rc, probe_out = machine.execute(
-            "su - jacob -c 'sudo -nH nixos-rebuild switch --show-trace 2>&1'"
-        )
-        print(f"=== probe (sudo nixos-rebuild switch --show-trace) rc={rc} ===")
-        print(probe_out)
-        print("=== end probe ===")
-        assert rc == 0, f"nixos-rebuild switch probe failed (rc={rc}); see output above"
 
         # --- Run the full bootstrap (all 6 phases) -----------------------
         #
