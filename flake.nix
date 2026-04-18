@@ -19,6 +19,10 @@
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nix-darwin = {
+      url = "github:nix-darwin/nix-darwin";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -29,6 +33,7 @@
       nix-win,
       git-hooks,
       sops-nix,
+      nix-darwin,
     }:
     let
       systems = [
@@ -156,6 +161,20 @@
         else
           { }
       );
+
+      # ── Phase 0: minimal Darwin config for sops-nix activation ────────
+      # Activated transiently from `phases/darwin/onepassword.py` via
+      # `sudo nix run nix-darwin -- switch --flake <self>#bootstrap`.
+      # sops-nix at that activation writes plaintext to
+      # /run/secrets/bootstrap-github-token. The `switch` phase later
+      # replaces this with the user's full dotfiles darwinConfiguration.
+      darwinConfigurations.bootstrap = nix-darwin.lib.darwinSystem {
+        system = "aarch64-darwin";
+        modules = [
+          sops-nix.darwinModules.default
+          ./nix/darwin
+        ];
+      };
 
       # ── Phase 0: minimal Windows config (bootstrap state) ────────────
       # Evaluated inside WSL via:
