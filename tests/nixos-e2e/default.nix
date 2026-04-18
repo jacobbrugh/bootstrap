@@ -123,9 +123,6 @@ let
         start_all()
         machine.wait_for_unit("multi-user.target")
 
-        # --- Stage runtime inputs from the shared 9p mount ---------------
-        # Dotfiles: `cp -r` from /nix/store-style read-only share into a
-        # writable home path so the register phase can commit + push.
         machine.succeed("cp -r /mnt/shared/dotfiles /home/jacob/dotfiles")
         machine.succeed("chown -R jacob:users /home/jacob/dotfiles")
         machine.succeed("chmod -R u+w /home/jacob/dotfiles")

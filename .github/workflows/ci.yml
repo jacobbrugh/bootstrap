@@ -107,6 +107,12 @@ jobs:
             "https://x-access-token:${DOTFILES_READ_TOKEN}@github.com/jacobbrugh/dotfiles.git" \
             /tmp/bootstrap-e2e-shared/dotfiles
 
+          # Drop tracked symlinks (currently only `AGENTS.md -> CLAUDE.md`)
+          # before the 9p mount: qemu virtio-9p's readlink of relative
+          # targets returns ELOOP inside the VM, which blows up `cp -r`
+          # during VM-side staging. Bootstrap ignores these files.
+          find /tmp/bootstrap-e2e-shared/dotfiles -type l -delete
+
           install -m 600 /dev/stdin /tmp/bootstrap-e2e-shared/sandbox-key \
             <<<"${SANDBOX_BOOTSTRAP_AGE_KEY}"
 
