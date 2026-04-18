@@ -2,12 +2,7 @@
 
 from __future__ import annotations
 
-import bootstrap
 from bootstrap import cli
-
-
-def test_version_is_set() -> None:
-    assert bootstrap.__version__ == "0.1.0"
 
 
 def test_main_entry_point_is_callable() -> None:

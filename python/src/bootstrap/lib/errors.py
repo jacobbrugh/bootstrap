@@ -14,15 +14,6 @@ class BootstrapError(Exception):
     """Base class for all bootstrap-originated errors."""
 
 
-class PhaseError(BootstrapError):
-    """A phase failed in a way that should abort the bootstrap."""
-
-    def __init__(self, phase: str, message: str) -> None:
-        super().__init__(f"phase '{phase}' failed: {message}")
-        self.phase = phase
-        self.message = message
-
-
 class UserAbort(BootstrapError):
     """User declined an interactive prompt or explicitly aborted."""
 
@@ -52,14 +43,6 @@ class ShellError(BootstrapError):
         self.cmd = cmd
         self.returncode = returncode
         self.stderr = stderr
-
-
-class DecisionTreeError(BootstrapError):
-    """The register phase hit an unresolvable state conflict."""
-
-
-class NetworkError(BootstrapError):
-    """A network-dependent operation failed (gh upload, sops fetch, etc.)."""
 
 
 class WorkingTreeError(BootstrapError):

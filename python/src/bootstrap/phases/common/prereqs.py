@@ -1,8 +1,11 @@
-"""NixOS prereqs — ensure dirs exist.
+"""Prereqs for NixOS + Linux-HM — ensure `~/.ssh` and `~/.config/sops/age` exist.
 
-NixOS doesn't need Homebrew or /etc conflict resolution. The only work is
-making sure `~/.ssh` and `~/.config/sops/age` exist with mode 0700 so the
-downstream `ssh` and `register` phases can write to them.
+No Homebrew equivalent to install, no /etc conflict resolution. The tools
+the downstream phases need (`git`, `gh`, `sops`, `age`, `op`, `ssh-keygen`)
+are on PATH via the flake's `makeWrapperArgs`.
+
+Darwin has its own `phases/darwin/prereqs.py` because it additionally
+installs Homebrew and resolves `/etc` conflicts.
 """
 
 from __future__ import annotations

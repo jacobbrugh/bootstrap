@@ -130,30 +130,15 @@ let
         machine.succeed("chown -R jacob:users /home/jacob/dotfiles")
         machine.succeed("chmod -R u+w /home/jacob/dotfiles")
 
-        # The checkout's git config needs user.email/user.name for any
-        # register-internal commit that happens before the GIT_AUTHOR_*
-        # env overrides kick in (git's safety.directory gate, or
-        # anything that reads local config).
-        machine.succeed(
-            "su - jacob -c 'git -C /home/jacob/dotfiles config user.email fixture@example.com'"
-        )
-        machine.succeed(
-            "su - jacob -c 'git -C /home/jacob/dotfiles config user.name \"E2E Fixture\"'"
-        )
-
-        # Local bare clone as the push destination. Drop/replace any
-        # pre-existing `origin` remote that the real dotfiles checkout
-        # brought along (git@github.com:jacobbrugh/dotfiles.git), so
-        # the register phase pushes to our ephemeral bare instead of
-        # trying to reach real GitHub.
+        # Local bare clone as the push destination, then rewrite the
+        # existing `origin` remote (real GitHub URL baked into the source
+        # checkout) to point at the bare. Register phase pushes via the
+        # named remote, not a URL — the set-url redirect is load-bearing.
         machine.succeed(
             "su - jacob -c 'git clone --quiet --bare /home/jacob/dotfiles /home/jacob/origin.git'"
         )
         machine.succeed(
-            "su - jacob -c 'git -C /home/jacob/dotfiles remote remove origin || true'"
-        )
-        machine.succeed(
-            "su - jacob -c 'git -C /home/jacob/dotfiles remote add origin /home/jacob/origin.git'"
+            "su - jacob -c 'git -C /home/jacob/dotfiles remote set-url origin /home/jacob/origin.git'"
         )
 
         # At this point the VM has already activated with sops-nix; the
@@ -168,11 +153,14 @@ let
         before_system = machine.succeed("readlink /run/current-system").strip()
 
         # --- Run production bootstrap (all 6 phases) ---------------------
-        # No `BOOTSTRAP_HOSTNAME` (VM's `networking.hostName` drives it
-        # via `hostname -s`). No `BOOTSTRAP_SKIP_RENAME` (no-op on
-        # NixOS). Bootstrap reads the sops-nix-written token from
+        # VM's `networking.hostName` drives the hostname via `hostname
+        # -s`. Bootstrap reads the sops-nix-written token from
         # /run/secrets/bootstrap-github-token; mock `gh` answers api
         # calls.
+        #
+        # timeout=1800 (30 min): covers shallow dotfiles clone + `sops
+        # updatekeys` over bot-secrets + secrets + `nixos-rebuild
+        # switch` on a cold-cache VM build.
         machine.succeed(
             "su - jacob -c '"
             "export BOOTSTRAP_CANONICAL_DOTFILES=/home/jacob/dotfiles && "

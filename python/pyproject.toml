@@ -37,11 +37,9 @@ bootstrap-post         = "bootstrap.cli:phase_post"
 [tool.hatch.build.targets.wheel]
 packages = ["src/bootstrap"]
 
-# No force-include. `src/bootstrap/data/github_known_hosts.txt` is
-# auto-included by hatchling because it's inside the `src/bootstrap`
-# package. Sops-encrypted files under the repo-root `secrets/` are
-# *not* bundled in the wheel — Nix (via sops-nix at Phase 0 activation)
-# is the only consumer. See `lib/secrets.py`.
+# No package data. Sops-encrypted files under the repo-root `secrets/`
+# are *not* bundled in the wheel — sops-nix / sops-nix-darwin at Phase 0
+# activation is the only consumer. See `lib/secrets.py`.
 
 [tool.mypy]
 strict = true
@@ -49,10 +47,6 @@ python_version = "3.12"
 files = ["src/bootstrap", "tests"]
 warn_unreachable = true
 enable_error_code = ["redundant-expr", "truthy-bool", "possibly-undefined"]
-
-[[tool.mypy.overrides]]
-module = ["ruamel.*", "tomlkit.*"]
-ignore_missing_imports = false
 
 [tool.ruff]
 line-length = 100

@@ -83,15 +83,17 @@ This ruleset exists primarily for the **Windows migration**: when Windows phases
 
 Two key context managers own the lifecycle of resources that need cleanup on failure:
 
-- **`bootstrap.lib.secrets.ephemeral_secrets(ctx)`** — the single-secret-zero flow. On entry:
-  1. One `op read` call extracts the bootstrap age private key from 1Password into a mode-0600 temp file under `$XDG_RUNTIME_DIR/bootstrap/`.
-  2. That age key is used to `sops decrypt` the repo's own `python/src/bootstrap/data/bootstrap-secrets.sops.yaml` (bundled as package data via hatchling `force-include`).
-  3. Decrypted YAML is parsed via ruamel.yaml `typ="safe"`; `github_token` is assigned to `ctx.github_token`.
-  4. `ctx.bootstrap_age_key_file` is set to the temp file path.
+- **`bootstrap.lib.secrets.ephemeral_secrets(ctx)`** — scope primitive, not a decrypt flow. Python never touches sops or 1Password; it just reads plaintext written by sops-nix. On entry:
+  1. Read plaintext `github_token` from `/run/secrets/bootstrap-github-token` (overridable via `BOOTSTRAP_GITHUB_TOKEN_FILE`). Write to `ctx.github_token`.
+  2. Stat `/var/lib/nixos-bootstrap/age-key` (overridable via `BOOTSTRAP_AGE_KEY_FILE`). Write the path to `ctx.bootstrap_age_key_file` for the register phase's `sops updatekeys`.
 
-  On exit (or on any exception — including one thrown during sops decrypt, BEFORE the `yield`), the age key file is shredded and both context fields are cleared. The orchestrator wraps the secret-dependent phase subset (`ssh`, `register`, `switch`) in this so the secrets exist for exactly the span that needs them. Standalone phase entry points (`nix run .#ssh`, `nix run .#register`) open the same context themselves.
+  On exit (or on any exception), both context fields are cleared. The orchestrator wraps `ssh` + `register` in this so the token is readable for exactly the span that needs it; standalone phase entry points (`nix run .#ssh`, `nix run .#register`) open the same context themselves.
 
-  **There is only one 1Password item referenced at runtime** (the age key, at `op://Personal/bw2otnlpjhm434grbcbpb6dady/credential`). The GH PAT and any other bootstrap secrets live in `bootstrap-secrets.sops.yaml`, decryptable offline given the age key. Adding a new bootstrap secret is `sops python/src/bootstrap/data/bootstrap-secrets.sops.yaml` (with `SOPS_AGE_KEY_FILE` pointed at the age private key), then a code edit to read the new field from the parsed dict. Not another 1Password item.
+  Where the plaintext comes from:
+  - **NixOS**: sops-nix nixosModule decrypts at activation. Operator pre-stages `/var/lib/nixos-bootstrap/age-key` before first boot; the `phase0-firstboot` systemd service `shred -u`'s it after activation so it doesn't persist.
+  - **Darwin**: `phases/darwin/onepassword.py` fetches the age key from 1Password (`op://Personal/bw2otnlpjhm434grbcbpb6dady/credential` for devbox, `TODO-sandbox-…` for sandbox), `sudo tee`'s it to the same path, and activates a minimal nix-darwin Phase 0 config so sops-nix-darwin decrypts plaintext to `/run/secrets/bootstrap-github-token`. `phases/darwin/post.py` shreds the age key at the end of bootstrap, mirroring the NixOS pattern.
+
+  **There is only one 1Password item referenced on Darwin** (the age key). The GH PAT and any other bootstrap secrets live in `secrets/bootstrap-secrets.sops.yaml`, decryptable offline given the age key. Adding a new bootstrap secret is `sops secrets/bootstrap-secrets.sops.yaml` (with the age private key configured), then wiring the Nix-side `sops.secrets.<name>` declaration in `nix/nixos/default.nix` / `nix/darwin/default.nix`. Not another 1Password item.
 
 - **`bootstrap.lib.git_ops.transactional_edit(repo)`** — captures HEAD on entry, runs `git reset --hard <initial-HEAD>` in `finally` on any exception. Wraps the destructive section of `register.py` so a failed `git push` (or anything else) leaves both the working tree AND any partial commits rolled back to a clean state. Re-running the bootstrap just works.
 
@@ -104,7 +106,7 @@ Two key context managers own the lifecycle of resources that need cleanup on fai
 - `ctx.platform` — `Platform` enum value from runtime detection
 - `ctx.hostname` — current system hostname (post-rename if Darwin scutil rename happened)
 - `ctx.canonical_repo` — `~/repos/jacobbrugh/nix-config/nix-config/`
-- `ctx.dry_run`, `ctx.non_interactive`, `ctx.verbose`
+- `ctx.dry_run`, `ctx.non_interactive`
 - `ctx.has_windows_host` — True when `Platform.NIXOS_WSL`; reserved for Windows migration
 - `ctx.bootstrap_age_key_file`, `ctx.github_token` — populated by `ephemeral_secrets`, None outside that span
 
@@ -114,7 +116,7 @@ This makes every phase trivially testable: build a `Context` in a fixture, call 
 
 Under no circumstances should phases import `subprocess` directly. Everything goes through `bootstrap.lib.sh`:
 
-- `sh.run(cmd, *, dry_run=False, destructive=True, …)` — typed wrapper returning `Result`. In dry-run mode, `destructive=True` calls become no-ops that log `would run: …`; `destructive=False` (read-only ops like `git status`, `op whoami`) still execute so decision trees are testable on a real machine.
+- `sh.run(cmd, *, dry_run=False, destructive=True, …)` — typed wrapper returning `Result`. In dry-run mode, `destructive=True` calls become no-ops that log `would run: …`; `destructive=False` (read-only ops like `git status`, `op user get --me`) still execute so decision trees are testable on a real machine.
 - `sh.sudo_run(cmd, …)` — prefixes `sudo -n`. Relies on `sh.prime_sudo()` having been called once earlier.
 - `sh.prime_sudo(*, dry_run=False)` — interactive `sudo -v` prompt. Skipped in dry-run.
 - `sh.run_powershell(script, …)` — **stub for the Windows migration**. Raises `PlatformError` on non-WSL today. The contract is locked in so future call sites don't need new plumbing.
@@ -136,10 +138,10 @@ Register modifications are wrapped in `git_ops.transactional_edit` so a failed `
 ## Things to know about the flake
 
 - **`config.allowUnfree = true`** in `pkgsFor` — blanket allow, not a per-package predicate. `_1password-cli` is the immediate need (it's unfree), but the project policy is to allow unfree generally rather than maintain an allowlist that drifts every time a new dependency comes in. Don't replace this with `allowUnfreePredicate`.
-- **Two committed sops-encrypted files**, both decryptable only with the bootstrap age key (public half in `.sops.yaml:6`, private half at `op://Personal/bw2otnlpjhm434grbcbpb6dady/credential`):
-  - `python/src/bootstrap/data/bootstrap-secrets.sops.yaml` — Python-side runtime secrets (currently just `github_token`). Shipped as package data via hatchling `force-include`. Decrypted inside `ephemeral_secrets` at bootstrap runtime.
-  - `nix/nixos/secrets/phase0.yaml` — Phase 0 NixOS firstboot secrets (`headscale_login_server`, `timezone`). Decrypted inside the `phase0-firstboot` systemd service using `SOPS_AGE_KEY_FILE=/var/lib/nixos-bootstrap/age-key`, where the user places the age private key once at nixos-install time alongside a single-use Tailscale auth key. After firstboot succeeds, both the age key and the auth key are `shred -u`'d so they don't persist on the installed system.
-- **`.sops.yaml` creation_rules** cover `\.sops\.ya?ml$` and `nix/nixos/secrets/.*\.ya?ml$`. The recipient is a single `&bootstrap` age anchor. Re-encrypting (`sops updatekeys`) isn't needed unless you add/remove recipients, which you shouldn't.
+- **Two committed sops-encrypted files**, both under the repo-root `secrets/` directory and decryptable only with the bootstrap age key (public half in `.sops.yaml:6`, private half at `op://Personal/bw2otnlpjhm434grbcbpb6dady/credential`):
+  - `secrets/bootstrap-secrets.sops.yaml` — runtime secrets (currently just `github_token`). Decrypted at Phase 0 activation by sops-nix (NixOS nixosModule) or sops-nix-darwin (Darwin darwinModule); plaintext lands at `/run/secrets/bootstrap-github-token` and `ephemeral_secrets` reads it directly. Python never decrypts.
+  - `secrets/phase0.yaml` — Phase 0 NixOS firstboot secrets (`headscale_login_server`, `timezone`). Decrypted inside the `phase0-firstboot` systemd service using `SOPS_AGE_KEY_FILE=/var/lib/nixos-bootstrap/age-key`, where the user places the age private key once at nixos-install time alongside a single-use Tailscale auth key. After firstboot succeeds, both the age key and the auth key are `shred -u`'d so they don't persist on the installed system. Darwin's equivalent shred happens in `phases/darwin/post.py`.
+- **`.sops.yaml` creation_rules** cover the single regex `secrets/.*\.ya?ml$`. The recipient is a single `&bootstrap` age anchor. Re-encrypting (`sops updatekeys`) isn't needed unless you add/remove recipients, which you shouldn't.
 - **`nixosConfigurations.bootstrap` is conditionally exposed** — only when `./host-hardware.nix` exists. Otherwise `nix flake check` would trip on the missing module. `nixosConfigurations.wsl-bootstrap` always exists. Adding `host-hardware.nix` (via `cp /etc/nixos/hardware-configuration.nix host-hardware.nix`) is the affirmative step that makes the bare-metal config available.
 - **`nix/nixos/default.nix` IS the bare-metal config.** `nix/nixos/wsl.nix` is an override module that uses `lib.mkForce` to disable the bare-metal-only options (`networking.wireless`, `networking.useDHCP`, `services.getty.autologinUser`) and adds WSL-specific config. There is no `bare-metal.nix` and there is no shared `user.nix` — the defaults model means WSL inherits everything that isn't explicitly overridden.
 - **`windows-bootstrap.nix` has a `TODO (windows-migration)` block.** nix-win renamed `win.dsc.services.<name>` to the generated `win.dsc.psdsc.service.<name>` submodule with capital-cased DSC properties. The SSH service startup is commented out until the Windows migration session re-wires it.

@@ -1,14 +1,25 @@
 """Ephemeral lifecycle for the bootstrap GitHub PAT + age-key path.
 
-The bootstrap CLI doesn't decrypt anything — the NixOS Phase 0
-configuration does, via sops-nix. At activation, sops-nix reads the
-operator-pre-staged age key from `/var/lib/nixos-bootstrap/age-key`,
-decrypts the bundled `secrets/bootstrap-secrets.sops.yaml` (encrypted
-to that key), and writes the plaintext `github_token` field to
+The bootstrap CLI doesn't decrypt anything — sops-nix does, at Phase 0
+activation. At activation, sops-nix reads the operator-pre-staged age
+key from `/var/lib/nixos-bootstrap/age-key`, decrypts the bundled
+`secrets/bootstrap-secrets.sops.yaml` (encrypted to that key), and
+writes the plaintext `github_token` field to
 `/run/secrets/bootstrap-github-token`.
 
-This module just reads that file, puts the token in `ctx.github_token`
-for the ssh + register phases, and clears it on exit.
+Per-platform activation:
+  - NixOS: sops-nix nixosModule, activated by `nixosConfigurations.bootstrap`
+    at first boot (or `wsl-bootstrap` inside WSL).
+  - Darwin: sops-nix-darwin module, activated transiently by
+    `phases/darwin/onepassword.py` via `sudo nix run nix-darwin -- switch
+    --flake <bootstrap>#bootstrap`. The age key arrives via `op read`
+    against the user's 1Password devbox/sandbox item, gets `sudo tee`'d
+    to the same `/var/lib/nixos-bootstrap/age-key` path, and is shredded
+    at the end of bootstrap by `phases/darwin/post.py` (mirroring the
+    NixOS `phase0-firstboot` `shred -u` step).
+
+This module just reads the plaintext file, puts the token in
+`ctx.github_token` for the ssh + register phases, and clears it on exit.
 
 For the age-key path (`ctx.bootstrap_age_key_file`): the register phase
 passes it to `sops updatekeys` when re-encrypting `bot-secrets.yaml` +

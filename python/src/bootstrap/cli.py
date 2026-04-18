@@ -145,7 +145,7 @@ def _run_phase(
                 non_interactive=non_interactive,
             )
 
-        if platform is Platform.DARWIN and not os.environ.get("BOOTSTRAP_SKIP_RENAME"):
+        if platform is Platform.DARWIN:
             # Always call rename_darwin on Darwin, even when chosen matches
             # detected_hostname. `detect_hostname` reads LocalHostName, but
             # macOS setup assistant also has ComputerName (where the human
@@ -155,11 +155,6 @@ def _run_phase(
             # characters macOS seeded them with. `scutil --set X <same>` is
             # an idempotent write, so this is free when the values already
             # match.
-            #
-            # BOOTSTRAP_SKIP_RENAME is a test-only escape hatch: the local
-            # test harness runs `bootstrap register` against a throwaway
-            # dotfiles checkout with a fake hostname, and we don't want the
-            # test to actually rename the developer's Mac.
             _log.info("setting machine hostname to %s", chosen)
             await sh.prime_sudo(dry_run=dry_run)
             await host_info.rename_darwin(chosen, dry_run=dry_run)
@@ -170,7 +165,6 @@ def _run_phase(
             canonical_repo=CANONICAL_DOTFILES,
             dry_run=dry_run,
             non_interactive=non_interactive,
-            verbose=verbose,
             has_windows_host=(platform is Platform.NIXOS_WSL),
             is_sandbox=is_sandbox,
         )

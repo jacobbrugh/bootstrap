@@ -290,8 +290,8 @@ async def run(ctx: Context) -> None:
 
                 # sops updatekeys — re-encrypt secret files against the new
                 # recipient list. Gated on `not ctx.dry_run` because in dry-run
-                # `ctx.bootstrap_age_key_file` is None (ephemeral_secrets never
-                # touched 1Password) and we'd crash on the assert below.
+                # `ephemeral_secrets` is a no-op and `ctx.bootstrap_age_key_file`
+                # stays None, which would crash the assert below.
                 assert ctx.bootstrap_age_key_file is not None
                 await sops_ops.update_keys(
                     bot_secrets_path,

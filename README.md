@@ -67,14 +67,15 @@ All commands accept the same flags:
   (hatchling backend, src layout, `mypy --strict` enforced at build time).
 - `nix/nixos/` — Phase 0 minimal NixOS configs (`nixosConfigurations.bootstrap`
   for bare metal, `wsl-bootstrap` for NixOS-WSL).
-- `nix/nixos/secrets/phase0.yaml` — sops-encrypted Phase 0 firstboot secrets
+- `secrets/phase0.yaml` — sops-encrypted Phase 0 firstboot secrets
   (Headscale URL, timezone). Decrypted by the `phase0-firstboot` systemd
   unit using an age private key the user places at
   `/var/lib/nixos-bootstrap/age-key` at nixos-install time.
-- `python/src/bootstrap/data/bootstrap-secrets.sops.yaml` — sops-encrypted
-  Python-side runtime secrets (GitHub PAT). Decrypted inside
-  `bootstrap.lib.secrets.ephemeral_secrets` using the age key extracted
-  from 1Password at runtime.
+- `secrets/bootstrap-secrets.sops.yaml` — sops-encrypted runtime
+  secrets (GitHub PAT). Decrypted at Phase 0 activation by sops-nix
+  (NixOS) / sops-nix-darwin (Darwin); plaintext lands at
+  `/run/secrets/bootstrap-github-token`. Python reads that file
+  directly — no Python-driven decryption.
 - `.sops.yaml` — sops recipient config. One `&bootstrap` age anchor
   covers both encrypted files above.
 - `windows-bootstrap.nix` — Phase 0 minimal Windows config consumed by

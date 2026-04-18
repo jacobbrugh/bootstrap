@@ -16,6 +16,9 @@ from __future__ import annotations
 from bootstrap.lib import log, secrets
 from bootstrap.lib.errors import BootstrapError
 from bootstrap.lib.runtime import Context
+from bootstrap.phases.common import onepassword as common_onepassword
+from bootstrap.phases.common import post as common_post
+from bootstrap.phases.common import prereqs as common_prereqs
 from bootstrap.phases.common import register as common_register
 from bootstrap.phases.common import ssh as common_ssh
 from bootstrap.phases.darwin import keychain as darwin_keychain
@@ -23,13 +26,7 @@ from bootstrap.phases.darwin import onepassword as darwin_onepassword
 from bootstrap.phases.darwin import post as darwin_post
 from bootstrap.phases.darwin import prereqs as darwin_prereqs
 from bootstrap.phases.darwin import switch as darwin_switch
-from bootstrap.phases.linux import onepassword as linux_onepassword
-from bootstrap.phases.linux import post as linux_post
-from bootstrap.phases.linux import prereqs as linux_prereqs
 from bootstrap.phases.linux import switch as linux_switch
-from bootstrap.phases.nixos import onepassword as nixos_onepassword
-from bootstrap.phases.nixos import post as nixos_post
-from bootstrap.phases.nixos import prereqs as nixos_prereqs
 from bootstrap.phases.nixos import switch as nixos_switch
 from bootstrap.platform import Platform
 
@@ -120,10 +117,8 @@ async def _dispatch_prereqs(ctx: Context) -> None:
     match ctx.platform:
         case Platform.DARWIN:
             await darwin_prereqs.run(ctx)
-        case Platform.NIXOS | Platform.NIXOS_WSL:
-            await nixos_prereqs.run(ctx)
-        case Platform.LINUX_HM:
-            await linux_prereqs.run(ctx)
+        case Platform.NIXOS | Platform.NIXOS_WSL | Platform.LINUX_HM:
+            await common_prereqs.run(ctx)
         case _:
             raise BootstrapError(f"no prereqs phase for platform {ctx.platform.value}")
 
@@ -132,10 +127,8 @@ async def _dispatch_onepassword(ctx: Context) -> None:
     match ctx.platform:
         case Platform.DARWIN:
             await darwin_onepassword.run(ctx)
-        case Platform.NIXOS | Platform.NIXOS_WSL:
-            await nixos_onepassword.run(ctx)
-        case Platform.LINUX_HM:
-            await linux_onepassword.run(ctx)
+        case Platform.NIXOS | Platform.NIXOS_WSL | Platform.LINUX_HM:
+            await common_onepassword.run(ctx)
         case _:
             raise BootstrapError(f"no onepassword phase for platform {ctx.platform.value}")
 
@@ -156,9 +149,7 @@ async def _dispatch_post(ctx: Context) -> None:
     match ctx.platform:
         case Platform.DARWIN:
             await darwin_post.run(ctx)
-        case Platform.NIXOS | Platform.NIXOS_WSL:
-            await nixos_post.run(ctx)
-        case Platform.LINUX_HM:
-            await linux_post.run(ctx)
+        case Platform.NIXOS | Platform.NIXOS_WSL | Platform.LINUX_HM:
+            await common_post.run(ctx)
         case _:
             raise BootstrapError(f"no post phase for platform {ctx.platform.value}")

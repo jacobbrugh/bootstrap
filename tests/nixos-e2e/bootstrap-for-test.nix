@@ -3,10 +3,12 @@
 # `gh ssh-key add` from the ssh + register phases hit a local stub
 # instead of the real GitHub API.
 #
-# That's the only divergence from the real package — the bundled
-# `bootstrap-secrets-sandbox.sops.yaml` ships as-is, and the test
-# supplies the real sandbox bootstrap age key via SOPS_AGE_KEY_FILE
-# so secrets.py takes the production headless path end-to-end.
+# That's the only divergence from the real package. sops-nix on the
+# test VM reads the sandbox bootstrap age key from
+# /mnt/shared/sandbox-key (9p-mounted at boot) and decrypts the
+# committed `secrets/bootstrap-secrets.sops.yaml` to
+# `/run/secrets/bootstrap-github-token` — same code path the real
+# bootstrap uses, just with a sandbox-tier age key and a mocked `gh`.
 
 {
   bootstrap,

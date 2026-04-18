@@ -22,7 +22,6 @@ class Context:
     canonical_repo: Path
     dry_run: bool = False
     non_interactive: bool = False
-    verbose: bool = False
 
     # Set True when the detected platform is `Platform.NIXOS_WSL`. The
     # Windows migration session extends the NIXOS_WSL phase list with
